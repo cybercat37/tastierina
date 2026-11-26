@@ -1,0 +1,44 @@
+name: APK
+
+# Every push to main builds a signed APK and publishes it as a release,
+# so it can be downloaded from the phone under "Releases".
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build the APK
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+        env:
+          VERSION_CODE: ${{ github.run_number }}
+
+      - name: Name the file
+        run: cp app/build/outputs/apk/release/app-release.apk Tastierina-1.0.${{ github.run_number }}.apk
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: Tastierina 1.0.${{ github.run_number }}
+          make_latest: true
+          files: Tastierina-1.0.${{ github.run_number }}.apk
+          body: |
+            Scarica il file .apk qui sotto dal telefono e aprilo per installarlo.
+            Alla prima installazione Android chiede di consentire l'installazione da questa fonte.
+            Le versioni nuove si installano sopra la vecchia senza perdere livello e giri salvati.

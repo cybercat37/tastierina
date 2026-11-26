@@ -1,0 +1,53 @@
+plugins {
+    id 'com.android.application'
+}
+
+// GitHub Actions passes its run number, so every build installs as an update of the previous one.
+def buildNumber = Integer.parseInt(System.getenv('VERSION_CODE') ?: '1')
+
+android {
+    namespace = 'it.tastierina.app'
+    compileSdk = 35
+
+    defaultConfig {
+        applicationId = 'it.tastierina.app'
+        minSdk = 24
+        targetSdk = 35
+        versionCode = buildNumber
+        versionName = "1.0." + buildNumber
+    }
+
+    // One fixed key, kept in the repository, so that a new build replaces the old one
+    // without uninstalling. It is meant for personal installs, not for the Play Store.
+    signingConfigs {
+        shared {
+            storeFile = file('tastierina.keystore')
+            storeType = 'pkcs12'
+            storePassword = 'tastierina'
+            keyAlias = 'tastierina'
+            keyPassword = 'tastierina'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled = false
+            signingConfig = signingConfigs.shared
+        }
+        debug {
+            signingConfig = signingConfigs.shared
+        }
+    }
+
+    // The page lives in /web, so the same file serves the browser and the app.
+    sourceSets {
+        main {
+            assets.srcDirs = ['../web']
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
