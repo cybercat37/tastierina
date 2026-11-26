@@ -1,0 +1,13 @@
+[package]
+name = "engine-android"
+description = "Tastierina engine on Android: AAudio output and JNI entry points."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "tastierina"
+crate-type = ["cdylib"]
+
+[dependencies]
+engine = { path = "../engine" }

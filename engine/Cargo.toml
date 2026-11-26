@@ -1,0 +1,8 @@
+[package]
+name = "engine"
+description = "Tastierina audio engine: voices, metronome, timing judge. Pure Rust, no allocation while rendering."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]

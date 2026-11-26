@@ -1,0 +1,9 @@
+[package]
+name = "engine-cli"
+description = "Renders Tastierina sounds to WAV files, for listening without a phone."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+engine = { path = "../engine" }

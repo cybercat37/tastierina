@@ -1,0 +1,8 @@
+cassa peak=0.7869 rms=0.1733 crossings=116 length_ms=448.3
+rullante peak=0.7084 rms=0.1004 crossings=24239 length_ms=190.1
+clap peak=0.5545 rms=0.0668 crossings=6736 length_ms=262.7
+hat peak=0.3478 rms=0.0503 crossings=31248 length_ms=51.4
+tom peak=0.6636 rms=0.1460 crossings=242 length_ms=334.5
+cowbell peak=0.6867 rms=0.1135 crossings=1598 length_ms=296.5
+basso peak=0.6485 rms=0.0595 crossings=370 length_ms=689.6
+accordo peak=0.3903 rms=0.0550 crossings=590 length_ms=911.7

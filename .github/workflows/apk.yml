@@ -1,10 +1,11 @@
 name: APK
 
-# Every push to main builds a signed APK and publishes it as a release,
-# so it can be downloaded from the phone under "Releases".
+# Tests the Rust engine, builds it for Android, builds the app and publishes
+# the APK as a release. Builds from main are the latest release; builds from
+# other branches are pre-releases, to try on the phone before merging.
 on:
   push:
-    branches: [main]
+    branches: [main, native]
   workflow_dispatch:
 
 permissions:
@@ -21,6 +22,32 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Rust toolchain and Android targets
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+
+      - name: Test the engine
+        run: cargo test -p engine
+
+      - name: Build the engine for Android
+        run: |
+          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          BIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "NDK: $NDK"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$BIN/aarch64-linux-android26-clang"
+          export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER="$BIN/armv7a-linux-androideabi26-clang"
+          export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$BIN/x86_64-linux-android26-clang"
+          for pair in aarch64-linux-android:arm64-v8a armv7-linux-androideabi:armeabi-v7a x86_64-linux-android:x86_64; do
+            triple="${pair%%:*}"
+            abi="${pair##*:}"
+            cargo build -p engine-android --release --target "$triple"
+            mkdir -p "app/src/main/jniLibs/$abi"
+            cp "target/$triple/release/libtastierina.so" "app/src/main/jniLibs/$abi/"
+          done
+          ls -l app/src/main/jniLibs/*
+
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Build the APK
@@ -29,16 +56,18 @@ jobs:
           VERSION_CODE: ${{ github.run_number }}
 
       - name: Name the file
-        run: cp app/build/outputs/apk/release/app-release.apk Tastierina-1.0.${{ github.run_number }}.apk
+        run: cp app/build/outputs/apk/release/app-release.apk "Tastierina-2.0.${{ github.run_number }}.apk"
 
       - name: Publish the release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: Tastierina 1.0.${{ github.run_number }}
-          make_latest: true
-          files: Tastierina-1.0.${{ github.run_number }}.apk
+          tag_name: v2.0.${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          name: Tastierina 2.0.${{ github.run_number }}${{ github.ref_name != 'main' && format(' (prova, {0})', github.ref_name) || '' }}
+          prerelease: ${{ github.ref_name != 'main' }}
+          make_latest: ${{ github.ref_name == 'main' && 'true' || 'false' }}
+          files: Tastierina-2.0.${{ github.run_number }}.apk
           body: |
+            App nativa: motore audio in Rust su AAudio, interfaccia in Kotlin e Compose.
             Scarica il file .apk qui sotto dal telefono e aprilo per installarlo.
-            Alla prima installazione Android chiede di consentire l'installazione da questa fonte.
-            Le versioni nuove si installano sopra la vecchia senza perdere livello e giri salvati.
+            Si installa sopra la versione precedente.

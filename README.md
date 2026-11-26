@@ -1,30 +1,36 @@
 # Tastierina
 
-Una mini groovebox per imparare la musica dance elettronica, un livello alla volta.
+Una groovebox per imparare la musica dance elettronica, un livello alla volta.
+App Android nativa: motore audio in Rust su AAudio (bassa latenza),
+interfaccia in Kotlin e Jetpack Compose.
 
-| Livello | Cosa aggiunge |
-|---|---|
-| 1. Tastierina | Tastiera con canzoni guidate a pallini |
-| 2. Ritmo | Batteria a 16 passi e lezioni di ritmo (house, techno, drum and bass) |
-| 3. Groove | Righe di basso e melodia, registrazione dalla tastiera, filtro del basso |
-| 4. Groovebox | Giri A/B/C, giri da 1, 2 o 4 battute, scaletta, tutti i suoni di batteria |
+| Livello | Cosa aggiunge | Nativo |
+|---|---|---|
+| 0. Pad | Otto pad e il gioco "Tieni il tempo" | sì |
+| 1. Tastierina | Tastiera con canzoni guidate a pallini | in arrivo |
+| 2. Ritmo | Batteria a 16 passi e lezioni di ritmo | in arrivo |
+| 3. Groove | Basso, melodia, registrazione dalla tastiera | in arrivo |
+| 4. Groovebox | Giri A/B/C, 1-2-4 battute, scaletta | in arrivo |
 
-I suoni sono generati dal telefono, quindi l'app funziona anche senza internet.
+La versione web con tutti i livelli è in `web/index.html` e fa da specifica
+per quelli ancora da portare.
 
-## Installare l'app su Android
+## Installare l'app
 
-1. Apri la sezione **Releases** di questo repository dal telefono.
-2. Scarica il file `Tastierina-….apk` dell'ultima versione.
-3. Aprilo e consenti l'installazione da quella fonte quando Android lo chiede.
+Dal telefono apri **Releases**, scarica l'ultimo `Tastierina-….apk` e aprilo.
+Le versioni nuove si installano sopra la precedente.
 
-Le versioni successive si installano sopra la precedente, senza perdere livello e giri salvati.
+## Tieni il tempo
 
-## Com'è fatto
+Il tocco viene misurato sull'orologio dell'audio, non su quello dello
+schermo: il timestamp del tocco viene riportato sul fotogramma audio che in
+quel momento usciva dall'altoparlante (`AAudioStream_getTimestamp`). Così il
+ritardo dell'audio del telefono non conta contro chi suona.
 
-- `web/index.html`: tutta l'app, in una sola pagina (HTML, CSS e JavaScript, con Web Audio). Si apre anche in un browser.
-- `app/`: una piccola app Android che mostra la pagina a schermo intero.
-- `.github/workflows/apk.yml`: a ogni modifica su `main` GitHub compila l'APK e lo pubblica in Releases.
+## Sviluppo
 
-Per compilarla sul computer: `./gradlew assembleRelease` (serve JDK 17 e l'Android SDK).
+Vedi [AGENTS.md](AGENTS.md): struttura, comandi, regole per il thread audio.
 
-La chiave di firma `app/tastierina.keystore` è nel repository di proposito, così ogni build può aggiornare la precedente. Va bene per uso personale; per pubblicare sul Play Store serve una chiave privata, da tenere fuori dal repository.
+La chiave di firma `app/tastierina.keystore` è nel repository di proposito,
+così ogni build aggiorna la precedente. Va bene per uso personale; per il
+Play Store serve una chiave privata fuori dal repository.
