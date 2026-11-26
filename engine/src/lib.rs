@@ -22,6 +22,9 @@ pub const MAX_VOICES: usize = 24;
 pub const QUEUE_LEN: usize = 256;
 /// Pads waiting to be played at a future beat.
 pub const MAX_SCHEDULED: usize = 32;
+/// Codes in the schedule above the pads: count-in beeps.
+const CODE_COUNT: u8 = 254;
+const CODE_COUNT_GO: u8 = 255;
 pub const BPM_MIN: f32 = 50.0;
 pub const BPM_MAX: f32 = 180.0;
 
@@ -36,6 +39,8 @@ pub enum Command {
     /// Play a pad at a beat position of the metronome grid (ignored when the
     /// metronome is off, or when the beat has already passed).
     Schedule { pad: u8, beat: f64 },
+    /// A count-in beep at a beat (`go` for the last count). Same rules as `Schedule`.
+    ScheduleCount { beat: f64, go: bool },
     /// Forget every scheduled pad.
     ClearScheduled,
 }
@@ -190,19 +195,26 @@ impl Renderer {
             }
             Command::Volume(v) => self.volume = v.clamp(0.0, 1.0),
             Command::Schedule { pad, beat } => {
-                let past = self.metronome.on && self.metronome.grid.position(self.frame as f64) > beat;
-                if !self.metronome.on || past || Pad::from_index(pad).is_none() {
-                    return;
-                }
-                if let Some(slot) = self.scheduled.iter_mut().find(|s| s.is_none()) {
-                    *slot = Some((pad, beat));
-                    self.scheduled_count += 1;
+                if Pad::from_index(pad).is_some() {
+                    self.schedule(pad, beat);
                 }
             }
+            Command::ScheduleCount { beat, go } => self.schedule(if go { CODE_COUNT_GO } else { CODE_COUNT }, beat),
             Command::ClearScheduled => {
                 self.scheduled = [None; MAX_SCHEDULED];
                 self.scheduled_count = 0;
             }
+        }
+    }
+
+    fn schedule(&mut self, code: u8, beat: f64) {
+        let past = self.metronome.on && self.metronome.grid.position(self.frame as f64) > beat;
+        if !self.metronome.on || past {
+            return;
+        }
+        if let Some(slot) = self.scheduled.iter_mut().find(|s| s.is_none()) {
+            *slot = Some((code, beat));
+            self.scheduled_count += 1;
         }
     }
 
@@ -213,8 +225,14 @@ impl Renderer {
                 if pos >= beat {
                     self.scheduled[i] = None;
                     self.scheduled_count -= 1;
-                    if let Some(p) = Pad::from_index(pad) {
-                        self.start(Sound::Pad(p), 1.0);
+                    match pad {
+                        CODE_COUNT => self.start(Sound::Count(false), 1.0),
+                        CODE_COUNT_GO => self.start(Sound::Count(true), 1.0),
+                        _ => {
+                            if let Some(p) = Pad::from_index(pad) {
+                                self.start(Sound::Pad(p), 1.0);
+                            }
+                        }
                     }
                 }
             }
@@ -312,6 +330,19 @@ mod tests {
         let at = at.ceil() as usize;
         assert!(out[at - 2000..at].iter().all(|s| s.abs() < 1e-3), "nothing before the beat");
         assert!(out[at..at + 400].iter().any(|s| s.abs() > 0.1), "the tom on the beat");
+    }
+
+    #[test]
+    fn count_beeps_play_on_their_beats() {
+        let (mut c, mut r) = engine(SR);
+        c.send(Command::Metronome { on: true, bpm: 120.0 });
+        run(&mut r, 480);
+        let grid = c.shared.grid().unwrap();
+        c.send(Command::ScheduleCount { beat: 1.5, go: true });
+        let out = run(&mut r, 48_000);
+        let at = (grid.origin + 1.5 * grid.frames_per_beat - 480.0).ceil() as usize;
+        assert!(out[at - 2000..at].iter().all(|s| s.abs() < 1e-3));
+        assert!(out[at..at + 400].iter().any(|s| s.abs() > 0.05));
     }
 
     #[test]

@@ -16,7 +16,7 @@ enum class Level(val number: String, val title: String) {
 }
 
 /** Where a "Ripeti" round is, from the beat being heard. */
-enum class RipetiPhase { COUNT_IN, LISTEN, YOUR_TURN, RESULT }
+enum class RipetiPhase { COUNT_IN, LISTEN, COUNT, YOUR_TURN, RESULT }
 
 /** Everything the screen shows, and the only place that talks to [Engine]. */
 object AppState {
@@ -28,10 +28,13 @@ object AppState {
     const val BPM_MIN = 60
     const val BPM_MAX = 140
 
-    /** A round of Ripeti: listen bar, answer bar, result bar. */
-    private const val ROUND_BEATS = 12L
+    /** A round of Ripeti: listen, count-in (4-3-2-1), answer, result; a bar each. */
+    private const val ROUND_BEATS = 16L
+    const val COUNT_AT = 4.0
+    const val ANSWER_AT = 8.0
+    const val RESULT_AT = 12.0
     /** Ask for the verdict a little after the answer bar, so late hits still count. */
-    private const val RESULT_AFTER = 8.35
+    private const val RESULT_AFTER = RESULT_AT + 0.35
 
     /** Frame time of the current UI frame, System.nanoTime() clock. */
     var now by mutableLongStateOf(0L)
@@ -84,6 +87,9 @@ object AppState {
 
     val metronomeRunning: Boolean get() = tempo || level == Level.RIPETI
 
+    /** Beats since the start of the current Ripeti round, or NaN. */
+    val ripetiBeat: Double get() = beatPosition - roundStart
+
     val ripetiPhase: RipetiPhase
         get() {
             val pos = beatPosition
@@ -91,8 +97,9 @@ object AppState {
             val rel = pos - roundStart
             return when {
                 rel < 0 -> RipetiPhase.COUNT_IN
-                rel < 4 -> RipetiPhase.LISTEN
-                rel < 8 -> RipetiPhase.YOUR_TURN
+                rel < COUNT_AT -> RipetiPhase.LISTEN
+                rel < ANSWER_AT -> RipetiPhase.COUNT
+                rel < RESULT_AT -> RipetiPhase.YOUR_TURN
                 else -> RipetiPhase.RESULT
             }
         }

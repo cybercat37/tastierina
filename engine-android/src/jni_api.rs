@@ -33,6 +33,9 @@ static GAME: Mutex<Option<Game>> = Mutex::new(None);
 
 /// Hits this far outside the player's bar (in beats) are not part of the attempt.
 const ATTEMPT_MARGIN: f64 = 0.5;
+/// Bars of a round, in beats from its start: listen at 0, count-in, answer.
+const COUNT_BAR: f64 = 4.0;
+const ANSWER_BAR: f64 = 8.0;
 
 /// No judgment: the metronome is off.
 const NO_JUDGMENT: i64 = i64::MIN;
@@ -162,8 +165,8 @@ fn record_attempt_hit(pad: u8, beat: f64) {
 }
 
 /// Starts a round of "Ripeti": the phrase plays in the bar starting at
-/// `listen_start` (a beat of the running metronome), the player answers in the
-/// next bar. With `keep`, the previous phrase is played again. Returns the
+/// `listen_start` (a beat of the running metronome), the next bar counts in
+/// 4-3-2-1, and the player answers in the bar after that. With `keep`, the previous phrase is played again. Returns the
 /// packed phrase (engine::repeat::Phrase::pack).
 #[no_mangle]
 pub extern "system" fn Java_it_tastierina_app_Engine_nativeRepeatRound(
@@ -185,9 +188,12 @@ pub extern "system" fn Java_it_tastierina_app_Engine_nativeRepeatRound(
         for n in phrase.notes() {
             o.control.send(Command::Schedule { pad: n.pad, beat: start + n.beat() });
         }
+        for k in 0..4 {
+            o.control.send(Command::ScheduleCount { beat: start + COUNT_BAR + k as f64, go: k == 3 });
+        }
     });
     if let Ok(mut game) = GAME.lock() {
-        *game = Some(Game { phrase, attempt_start: start + 4.0, hits: [(0, 0.0); 48], count: 0 });
+        *game = Some(Game { phrase, attempt_start: start + ANSWER_BAR, hits: [(0, 0.0); 48], count: 0 });
     }
     phrase.pack()
 }

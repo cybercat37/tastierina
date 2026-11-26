@@ -114,7 +114,10 @@ fun TastierinaApp() {
             onHelp = { showHelp = true },
         )
         Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            PadGrid(Modifier.weight(1f).fillMaxHeight())
+            Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (s.level == Level.RIPETI) TurnBar(Modifier.fillMaxWidth().height(46.dp))
+                PadGrid(Modifier.weight(1f).fillMaxWidth())
+            }
             if (s.tempo) TempoPanel(Modifier.width(160.dp).fillMaxHeight())
             if (s.level == Level.RIPETI) RipetiPanel(Modifier.width(206.dp).fillMaxHeight())
         }
@@ -190,9 +193,10 @@ private fun Lcd(modifier: Modifier) {
     val text = when {
         !s.audioOk -> "audio non disponibile: riapri l'app"
         s.level == Level.RIPETI -> when (s.ripetiPhase) {
-            RipetiPhase.COUNT_IN -> "pronti: ascolta la frase..."
-            RipetiPhase.LISTEN -> "ASCOLTA"
-            RipetiPhase.YOUR_TURN -> "TOCCA TU!"
+            RipetiPhase.COUNT_IN -> "pronti: tra poco la frase"
+            RipetiPhase.LISTEN -> "ascolta la frase"
+            RipetiPhase.COUNT -> "pronti: al via tocca a te"
+            RipetiPhase.YOUR_TURN -> "ripeti la frase"
             RipetiPhase.RESULT -> when {
                 e == null -> ""
                 e.perfect -> "PERFETTO! la prossima è più lunga"
@@ -366,6 +370,79 @@ private fun TempoPanel(modifier: Modifier) {
     }
 }
 
+/**
+ * Where the round is, in big letters right above the pads: the word for the
+ * phase and the four beats of its bar. During the count-in the beats read
+ * 4 3 2 1; during the player's turn they fill up, then "Fine".
+ */
+@Composable
+private fun TurnBar(modifier: Modifier) {
+    val s = AppState
+    val phase = s.ripetiPhase
+    val rel = s.ripetiBeat
+    val e = s.evaluation
+    val barStart = when (phase) {
+        RipetiPhase.LISTEN -> 0.0
+        RipetiPhase.COUNT -> AppState.COUNT_AT
+        RipetiPhase.YOUR_TURN -> AppState.ANSWER_AT
+        RipetiPhase.RESULT -> AppState.RESULT_AT
+        RipetiPhase.COUNT_IN -> -4.0
+    }
+    val beatInBar = if (rel.isNaN()) -1 else floor(rel - barStart).toInt().coerceIn(-1, 3)
+    val justEnded = phase == RipetiPhase.RESULT && !rel.isNaN() && rel - AppState.RESULT_AT < 0.75
+    val (word, color) = when (phase) {
+        RipetiPhase.COUNT_IN -> "Pronti…" to C.ivory
+        RipetiPhase.LISTEN -> "Ascolta" to C.ivory
+        RipetiPhase.COUNT -> (if (beatInBar >= 0) "${4 - beatInBar}" else "Pronti…") to C.ivory
+        RipetiPhase.YOUR_TURN -> "Tocca a te!" to C.accent
+        RipetiPhase.RESULT -> when {
+            justEnded || e == null -> "Fine" to C.ivory
+            e.perfect -> "Perfetto!" to C.good
+            e.passed -> "Giusto!" to C.good
+            else -> "Riprova" to C.miss
+        }
+    }
+    Row(
+        modifier.clip(RoundedCornerShape(12.dp)).background(C.well).padding(horizontal = 14.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Text(
+            word,
+            color = color,
+            fontSize = 26.sp,
+            fontWeight = FontWeight.ExtraBold,
+            modifier = Modifier.width(190.dp),
+            maxLines = 1,
+        )
+        Row(Modifier.weight(1f).fillMaxHeight(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            for (k in 0 until 4) {
+                val active = phase == RipetiPhase.LISTEN || phase == RipetiPhase.COUNT || phase == RipetiPhase.YOUR_TURN
+                val passed = active && k <= beatInBar
+                val fill = when {
+                    !passed -> Color(0xFF2C2E31)
+                    phase == RipetiPhase.YOUR_TURN -> C.accent
+                    else -> C.ivory.copy(alpha = if (k == beatInBar) 0.9f else 0.45f)
+                }
+                Box(
+                    Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(7.dp)).background(fill),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (phase == RipetiPhase.COUNT) {
+                        Text(
+                            "${4 - k}",
+                            color = if (passed) C.ebony else C.ivory.copy(alpha = 0.6f),
+                            fontFamily = Mono,
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun RipetiPanel(modifier: Modifier) {
     val s = AppState
@@ -374,14 +451,15 @@ private fun RipetiPanel(modifier: Modifier) {
     val pos = s.beatPosition
     val barStart = when (phase) {
         RipetiPhase.LISTEN -> s.roundStart.toDouble()
-        RipetiPhase.YOUR_TURN -> s.roundStart + 4.0
+        RipetiPhase.YOUR_TURN -> s.roundStart + AppState.ANSWER_AT
         else -> Double.NaN
     }
     val head = if (barStart.isNaN() || pos.isNaN()) -1 else floor((pos - barStart) * 2).toInt()
     val (word, wordColor) = when (phase) {
         RipetiPhase.COUNT_IN -> "Pronti" to C.ivory
         RipetiPhase.LISTEN -> "Ascolta" to C.ivory
-        RipetiPhase.YOUR_TURN -> "Tocca tu" to C.accent
+        RipetiPhase.COUNT -> "Pronti…" to C.ivory
+        RipetiPhase.YOUR_TURN -> "Tocca a te!" to C.accent
         RipetiPhase.RESULT -> when {
             e == null -> "" to C.ivory
             e.perfect -> "Perfetto!" to C.good
@@ -621,7 +699,7 @@ private fun HelpDialog(onClose: () -> Unit) {
     val lines = listOf(
         "Pad" to "Tocca un pad per sentirlo. Puoi usare più dita insieme.",
         "Tieni il tempo" to "Parte il battito: tocca la Cassa su ogni colpo. Il pannello a destra dice se eri a tempo, oppure quanto prima o dopo il battito.",
-        "Ripeti" to "Livello 0.5: ascolta la frase nella prima battuta e ripetila nella seconda, a tempo. Se è giusta la prossima si allunga, se no la risenti.",
+        "Ripeti" to "Livello 0.5: ascolta la frase, aspetta il conto 4, 3, 2, 1 e ripetila subito dopo, a tempo. La prima nota cade proprio dopo l'1. Se è giusta la prossima si allunga, se no la risenti.",
         "− BPM +" to "Cambia la velocità del battito, anche mentre suona.",
         "Livello" to "Da qui si sale di livello, man mano che arrivano.",
         "≡" to "Volume, e quanto ritardo ha l'audio su questo telefono.",

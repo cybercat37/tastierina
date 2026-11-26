@@ -57,6 +57,8 @@ pub enum Sound {
     Pad(Pad),
     /// `true` for the first beat of the bar.
     Tick(bool),
+    /// Count-in before the player's turn; `true` for the last count ("1": go).
+    Count(bool),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -196,6 +198,14 @@ impl Voice {
                 self.filter = Biquad::new(FilterKind::LowPass, sr, 2600.0, 0.7);
                 self.len = secs(1.3);
             }
+            Sound::Count(go) => {
+                // A short square beep, a fifth or an octave above the tick.
+                self.gain = 0.32 * v.max(0.5);
+                self.gain_k = decay_coef(sr, 0.12);
+                self.inc = [if go { 2093.0 } else { 1568.0 } / sr, 0.0, 0.0];
+                self.filter = Biquad::new(FilterKind::LowPass, sr, 4000.0, 0.7);
+                self.len = secs(0.16);
+            }
             Sound::Tick(accent) => {
                 self.gain = if accent { 0.4 } else { 0.28 } * v.max(0.5);
                 self.gain_k = decay_coef(sr, 0.05);
@@ -283,6 +293,10 @@ impl Voice {
                 self.phase[0] = (self.phase[0] + self.inc[0]).fract();
                 sin_turns(self.phase[0]) * self.gain
             }
+            Sound::Count(_) => {
+                self.phase[0] = (self.phase[0] + self.inc[0]).fract();
+                self.filter.process(square_turns(self.phase[0])) * self.gain
+            }
         };
         let in_attack = matches!(self.sound, Sound::Pad(Pad::Chord)) && self.t <= (0.006 * sr) as u32;
         // The clap steps its own gain (it holds still during the bursts).
@@ -319,6 +333,8 @@ mod tests {
         let mut all: Vec<Sound> = Pad::ALL.iter().map(|&p| Sound::Pad(p)).collect();
         all.push(Sound::Tick(true));
         all.push(Sound::Tick(false));
+        all.push(Sound::Count(true));
+        all.push(Sound::Count(false));
         for s in all {
             let out = render(s);
             assert!(out.len() < 48_000 * 3, "{s:?} never stops");
