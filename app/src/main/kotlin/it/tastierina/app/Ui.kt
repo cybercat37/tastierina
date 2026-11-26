@@ -192,17 +192,12 @@ private fun Lcd(modifier: Modifier) {
     val e = s.evaluation
     val text = when {
         !s.audioOk -> "audio non disponibile: riapri l'app"
-        s.level == Level.RIPETI -> when (s.ripetiPhase) {
-            RipetiPhase.COUNT_IN -> "pronti: tra poco la frase"
-            RipetiPhase.LISTEN -> "ascolta la frase"
-            RipetiPhase.COUNT -> "pronti: al via tocca a te"
-            RipetiPhase.YOUR_TURN -> "ripeti la frase"
-            RipetiPhase.RESULT -> when {
-                e == null -> ""
-                e.perfect -> "PERFETTO! la prossima è più lunga"
-                e.passed -> "GIUSTO! la prossima è più lunga"
-                else -> "RIPROVA: stessa frase"
-            }
+        s.level == Level.RIPETI -> when {
+            s.pendingStart != null -> if (s.pendingIsReplay) "a fine battuta la risenti" else "a fine battuta: frase nuova"
+            s.ripetiPhase == RipetiPhase.COUNT_IN -> "pronti: tra poco la frase"
+            s.ripetiPhase == RipetiPhase.LISTEN -> "ascolta la frase"
+            s.ripetiPhase == RipetiPhase.COUNT -> "pronti: al via tocca a te"
+            else -> "ripetila quante volte vuoi"
         }
         s.tempo && s.beatPosition.isNaN() -> "pronti..."
         s.tempo -> "tocca la Cassa su ogni battito"
@@ -370,55 +365,49 @@ private fun TempoPanel(modifier: Modifier) {
     }
 }
 
+/** The verdict of the player's last bar, while it is fresh. */
+private fun freshVerdict(): Evaluation? {
+    val s = AppState
+    val e = s.evaluation ?: return null
+    val since = s.beatPosition - s.evaluationEnd
+    return if (!since.isNaN() && since >= 0 && since < AppState.VERDICT_BEATS) e else null
+}
+
+private fun verdictWord(e: Evaluation): Pair<String, Color> = when {
+    e.perfect -> "Perfetto!" to C.good
+    e.passed -> "Giusto!" to C.good
+    else -> "Riprova" to C.miss
+}
+
 /**
  * Where the round is, in big letters right above the pads: the word for the
  * phase and the four beats of its bar. During the count-in the beats read
- * 4 3 2 1; during the player's turn they fill up, then "Fine".
+ * 4 3 2 1; in the player's turn they fill up bar after bar, and each bar's
+ * verdict flashes at the start of the next.
  */
 @Composable
 private fun TurnBar(modifier: Modifier) {
     val s = AppState
     val phase = s.ripetiPhase
     val rel = s.ripetiBeat
-    val e = s.evaluation
-    val barStart = when (phase) {
-        RipetiPhase.LISTEN -> 0.0
-        RipetiPhase.COUNT -> AppState.COUNT_AT
-        RipetiPhase.YOUR_TURN -> AppState.ANSWER_AT
-        RipetiPhase.RESULT -> AppState.RESULT_AT
-        RipetiPhase.COUNT_IN -> -4.0
-    }
-    val beatInBar = if (rel.isNaN()) -1 else floor(rel - barStart).toInt().coerceIn(-1, 3)
-    val justEnded = phase == RipetiPhase.RESULT && !rel.isNaN() && rel - AppState.RESULT_AT < 0.75
-    val (word, color) = when (phase) {
-        RipetiPhase.COUNT_IN -> "Pronti…" to C.ivory
-        RipetiPhase.LISTEN -> "Ascolta" to C.ivory
-        RipetiPhase.COUNT -> (if (beatInBar >= 0) "${4 - beatInBar}" else "Pronti…") to C.ivory
-        RipetiPhase.YOUR_TURN -> "Tocca a te!" to C.accent
-        RipetiPhase.RESULT -> when {
-            justEnded || e == null -> "Fine" to C.ivory
-            e.perfect -> "Perfetto!" to C.good
-            e.passed -> "Giusto!" to C.good
-            else -> "Riprova" to C.miss
-        }
+    val beatInBar = if (rel.isNaN()) -1 else Math.floorMod(floor(rel).toLong(), 4L).toInt()
+    val fresh = freshVerdict()
+    val (word, color) = when {
+        phase == RipetiPhase.COUNT_IN -> "Pronti…" to C.ivory
+        phase == RipetiPhase.LISTEN -> "Ascolta" to C.ivory
+        phase == RipetiPhase.COUNT -> "${4 - beatInBar}" to C.ivory
+        fresh != null -> verdictWord(fresh)
+        else -> "Tocca a te!" to C.accent
     }
     Row(
         modifier.clip(RoundedCornerShape(12.dp)).background(C.well).padding(horizontal = 14.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text(
-            word,
-            color = color,
-            fontSize = 26.sp,
-            fontWeight = FontWeight.ExtraBold,
-            modifier = Modifier.width(190.dp),
-            maxLines = 1,
-        )
+        Text(word, color = color, fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.width(190.dp), maxLines = 1)
         Row(Modifier.weight(1f).fillMaxHeight(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             for (k in 0 until 4) {
-                val active = phase == RipetiPhase.LISTEN || phase == RipetiPhase.COUNT || phase == RipetiPhase.YOUR_TURN
-                val passed = active && k <= beatInBar
+                val passed = phase != RipetiPhase.COUNT_IN && k <= beatInBar
                 val fill = when {
                     !passed -> Color(0xFF2C2E31)
                     phase == RipetiPhase.YOUR_TURN -> C.accent
@@ -448,40 +437,29 @@ private fun RipetiPanel(modifier: Modifier) {
     val s = AppState
     val phase = s.ripetiPhase
     val e = s.evaluation
-    val pos = s.beatPosition
-    val barStart = when (phase) {
-        RipetiPhase.LISTEN -> s.roundStart.toDouble()
-        RipetiPhase.YOUR_TURN -> s.roundStart + AppState.ANSWER_AT
-        else -> Double.NaN
+    val rel = s.ripetiBeat
+    // The playhead runs over the phrase while it plays and over each of the player's bars.
+    val head = when {
+        rel.isNaN() || phase == RipetiPhase.COUNT_IN || phase == RipetiPhase.COUNT -> -1
+        else -> Math.floorMod(floor(rel * 2).toLong(), 8L).toInt()
     }
-    val head = if (barStart.isNaN() || pos.isNaN()) -1 else floor((pos - barStart) * 2).toInt()
-    val (word, wordColor) = when (phase) {
-        RipetiPhase.COUNT_IN -> "Pronti" to C.ivory
-        RipetiPhase.LISTEN -> "Ascolta" to C.ivory
-        RipetiPhase.COUNT -> "Pronti…" to C.ivory
-        RipetiPhase.YOUR_TURN -> "Tocca a te!" to C.accent
-        RipetiPhase.RESULT -> when {
-            e == null -> "" to C.ivory
-            e.perfect -> "Perfetto!" to C.good
-            e.passed -> "Giusto!" to C.good
-            else -> "Riprova" to C.miss
-        }
-    }
+    val showMarks = phase == RipetiPhase.YOUR_TURN && e != null
     Column(
         modifier.clip(RoundedCornerShape(16.dp)).background(C.well).padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Label("Giro")
-            Text("${s.round}", color = C.ivory, fontFamily = Mono, fontSize = 26.sp, lineHeight = 26.sp)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Label("Frase")
+            Text("${s.round}", color = C.ivory, fontFamily = Mono, fontSize = 24.sp, lineHeight = 24.sp)
+            Spacer(Modifier.weight(1f))
+            Text("record ${s.bestRound}", color = C.ivory.copy(alpha = 0.7f), fontFamily = Mono, fontSize = 13.sp)
         }
-        Text(word, color = wordColor, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, lineHeight = 26.sp)
-        // The bar in eighths: where the notes are, where the music is now.
+        // The bar in eighths: where the notes are; under them, how the last bar went.
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             for (step in 0 until 8) {
                 val noteIndex = s.phrase.indexOfFirst { it.step == step }
                 val note = s.phrase.getOrNull(noteIndex)
-                val result = if (phase == RipetiPhase.RESULT && noteIndex >= 0) e?.results?.getOrNull(noteIndex) else null
+                val result = if (showMarks && noteIndex >= 0) e?.results?.getOrNull(noteIndex) else null
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Box(
                         Modifier.width(18.dp).height(30.dp).clip(RoundedCornerShape(5.dp))
@@ -489,15 +467,7 @@ private fun RipetiPanel(modifier: Modifier) {
                             .then(if (step == head) Modifier.border(2.dp, C.accent, RoundedCornerShape(5.dp)) else Modifier),
                         contentAlignment = Alignment.Center,
                     ) {
-                        if (note != null) {
-                            val color = C.padColors[note.pad]
-                            Box(
-                                Modifier.size(12.dp).clip(CircleShape).then(
-                                    if (phase == RipetiPhase.YOUR_TURN) Modifier.border(2.dp, color, CircleShape)
-                                    else Modifier.background(color),
-                                ),
-                            )
-                        }
+                        if (note != null) Box(Modifier.size(12.dp).clip(CircleShape).background(C.padColors[note.pad]))
                     }
                     Text(
                         when (result) {
@@ -518,10 +488,10 @@ private fun RipetiPanel(modifier: Modifier) {
                 }
             }
         }
-        val names = s.phrase.map { s.padNames[it.pad] }.distinct().joinToString(", ")
         Text(
             when {
-                phase == RipetiPhase.RESULT && e != null && !e.passed -> buildString {
+                !showMarks -> s.phrase.map { s.padNames[it.pad] }.distinct().joinToString(", ")
+                !e!!.passed -> buildString {
                     val missed = e.results.count { it == NoteResult.MISSED }
                     if (missed > 0) append(if (missed == 1) "1 nota mancata" else "$missed note mancate")
                     if (e.extra > 0) {
@@ -529,13 +499,27 @@ private fun RipetiPanel(modifier: Modifier) {
                         append(if (e.extra == 1) "1 colpo in più" else "${e.extra} colpi in più")
                     }
                 }
-                phase == RipetiPhase.RESULT && e != null && !e.perfect -> "‹ presto  › tardi"
-                else -> names
+                !e.perfect -> "‹ presto   › tardi"
+                else -> "tutte a tempo"
             },
             color = C.ivory.copy(alpha = 0.85f), fontSize = 14.sp, lineHeight = 18.sp,
         )
+        if (s.attempts > 0) {
+            Text(
+                "giuste ${s.passes} su ${s.attempts} · di fila ${s.inARow}",
+                color = C.ivory, fontFamily = Mono, fontSize = 13.sp,
+            )
+        }
         Spacer(Modifier.weight(1f))
-        Text("record: giro ${s.bestRound}", color = C.ivory.copy(alpha = 0.7f), fontFamily = Mono, fontSize = 13.sp)
+        val waiting = s.pendingStart != null
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Pill(dark = true, label = "Risenti la frase", onClick = { s.replayPhrase() }) {
+                Text("Risenti", color = C.ivory.copy(alpha = if (waiting) 0.5f else 1f), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            }
+            Pill(dark = false, filled = true, label = "Frase successiva", onClick = { s.nextPhrase() }) {
+                Text("Prossima", color = C.ink.copy(alpha = if (waiting) 0.5f else 1f), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
     }
 }
 
@@ -699,7 +683,7 @@ private fun HelpDialog(onClose: () -> Unit) {
     val lines = listOf(
         "Pad" to "Tocca un pad per sentirlo. Puoi usare più dita insieme.",
         "Tieni il tempo" to "Parte il battito: tocca la Cassa su ogni colpo. Il pannello a destra dice se eri a tempo, oppure quanto prima o dopo il battito.",
-        "Ripeti" to "Livello 0.5: ascolta la frase, aspetta il conto 4, 3, 2, 1 e ripetila subito dopo, a tempo. La prima nota cade proprio dopo l'1. Se è giusta la prossima si allunga, se no la risenti.",
+        "Ripeti" to "Livello 0.5: ascolta la frase, aspetta il conto 4, 3, 2, 1 e ripetila a tempo, battuta dopo battuta, quante volte vuoi. La prima nota cade proprio dopo l'1. Ogni battuta ha il suo esito. Risenti la fa riascoltare, Prossima passa a una frase nuova, più lunga se almeno una battuta era giusta.",
         "− BPM +" to "Cambia la velocità del battito, anche mentre suona.",
         "Livello" to "Da qui si sale di livello, man mano che arrivano.",
         "≡" to "Volume, e quanto ritardo ha l'audio su questo telefono.",

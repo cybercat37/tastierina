@@ -8,7 +8,7 @@ use std::ffi::c_void;
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 
-use engine::repeat::{evaluate, make_phrase, Phrase};
+use engine::repeat::{evaluate, hits_in_bar, make_phrase, Phrase};
 use engine::timing::{heard_frame, judge};
 use engine::Command;
 
@@ -20,19 +20,21 @@ type JBoolean = u8;
 
 static OUTPUT: Mutex<Option<Output>> = Mutex::new(None);
 
-/// The round of "Ripeti" being played: the phrase, and the player's hits in their bar.
+/// The round of "Ripeti" being played: the phrase, and the player's latest hits
+/// (pad, beat), kept in a ring. The player answers bar after bar.
 struct Game {
     phrase: Phrase,
-    /// Beat where the player's bar starts.
-    attempt_start: f64,
-    hits: [(u8, f64); 48],
-    count: usize,
+    /// No hit before this beat belongs to the round (the listening and count bars).
+    answer_start: f64,
+    hits: [(u8, f64); HIT_RING],
+    next: usize,
+    stored: usize,
 }
+
+const HIT_RING: usize = 64;
 
 static GAME: Mutex<Option<Game>> = Mutex::new(None);
 
-/// Hits this far outside the player's bar (in beats) are not part of the attempt.
-const ATTEMPT_MARGIN: f64 = 0.5;
 /// Bars of a round, in beats from its start: listen at 0, count-in, answer.
 const COUNT_BAR: f64 = 4.0;
 const ANSWER_BAR: f64 = 8.0;
@@ -155,10 +157,10 @@ pub extern "system" fn Java_it_tastierina_app_Engine_nativeSampleRate(_env: JEnv
 fn record_attempt_hit(pad: u8, beat: f64) {
     if let Ok(mut guard) = GAME.lock() {
         if let Some(g) = guard.as_mut() {
-            let rel = beat - g.attempt_start;
-            if (-ATTEMPT_MARGIN..4.0 + ATTEMPT_MARGIN).contains(&rel) && g.count < g.hits.len() {
-                g.hits[g.count] = (pad, rel);
-                g.count += 1;
+            if beat >= g.answer_start - 1.0 {
+                g.hits[g.next] = (pad, beat);
+                g.next = (g.next + 1) % HIT_RING;
+                g.stored = (g.stored + 1).min(HIT_RING);
             }
         }
     }
@@ -166,7 +168,7 @@ fn record_attempt_hit(pad: u8, beat: f64) {
 
 /// Starts a round of "Ripeti": the phrase plays in the bar starting at
 /// `listen_start` (a beat of the running metronome), the next bar counts in
-/// 4-3-2-1, and the player answers in the bar after that. With `keep`, the previous phrase is played again. Returns the
+/// 4-3-2-1, and the player answers from the bar after that, bar after bar. With `keep`, the previous phrase is played again. Returns the
 /// packed phrase (engine::repeat::Phrase::pack).
 #[no_mangle]
 pub extern "system" fn Java_it_tastierina_app_Engine_nativeRepeatRound(
@@ -193,23 +195,22 @@ pub extern "system" fn Java_it_tastierina_app_Engine_nativeRepeatRound(
         }
     });
     if let Ok(mut game) = GAME.lock() {
-        *game = Some(Game { phrase, attempt_start: start + ANSWER_BAR, hits: [(0, 0.0); 48], count: 0 });
+        *game = Some(Game { phrase, answer_start: start + ANSWER_BAR, hits: [(0, 0.0); HIT_RING], next: 0, stored: 0 });
     }
     phrase.pack()
 }
 
-/// Judges the player's bar of the current round (engine::repeat::Evaluation::pack).
+/// Judges the player's bar starting at beat `bar_start` (engine::repeat::Evaluation::pack).
 #[no_mangle]
-pub extern "system" fn Java_it_tastierina_app_Engine_nativeRepeatResult(_env: JEnv, _this: JObj) -> i64 {
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeRepeatResult(_env: JEnv, _this: JObj, bar_start: i64) -> i64 {
     let ms_per_beat = with_output(None, |o| {
         o.control.shared.grid().map(|g| g.frames_per_beat / o.sample_rate * 1000.0)
     });
     let Ok(guard) = GAME.lock() else { return 0 };
-    match (guard.as_ref(), ms_per_beat) {
-        (Some(g), Some(mpb)) => evaluate(&g.phrase, &g.hits[..g.count], mpb).pack(),
-        (Some(g), None) => evaluate(&g.phrase, &[], 500.0).pack(),
-        _ => 0,
-    }
+    let Some(g) = guard.as_ref() else { return 0 };
+    let mut bar = [(0u8, 0.0f64); HIT_RING];
+    let n = hits_in_bar(&g.hits[..g.stored], bar_start as f64, &mut bar);
+    evaluate(&g.phrase, &bar[..n], ms_per_beat.unwrap_or(500.0)).pack()
 }
 
 #[no_mangle]

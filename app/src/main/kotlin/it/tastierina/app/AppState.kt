@@ -16,7 +16,7 @@ enum class Level(val number: String, val title: String) {
 }
 
 /** Where a "Ripeti" round is, from the beat being heard. */
-enum class RipetiPhase { COUNT_IN, LISTEN, COUNT, YOUR_TURN, RESULT }
+enum class RipetiPhase { COUNT_IN, LISTEN, COUNT, YOUR_TURN }
 
 /** Everything the screen shows, and the only place that talks to [Engine]. */
 object AppState {
@@ -28,13 +28,13 @@ object AppState {
     const val BPM_MIN = 60
     const val BPM_MAX = 140
 
-    /** A round of Ripeti: listen, count-in (4-3-2-1), answer, result; a bar each. */
-    private const val ROUND_BEATS = 16L
+    /** A round of Ripeti: listen bar, count-in bar (4-3-2-1), then the player's bars until they move on. */
     const val COUNT_AT = 4.0
     const val ANSWER_AT = 8.0
-    const val RESULT_AT = 12.0
-    /** Ask for the verdict a little after the answer bar, so late hits still count. */
-    private const val RESULT_AFTER = RESULT_AT + 0.35
+    /** A bar is judged once its hit window (engine::repeat::BAR_LEAD) has closed. */
+    private const val JUDGE_AFTER = 3.8
+    /** How long the verdict of a bar stays up at the start of the next one, in beats. */
+    const val VERDICT_BEATS = 1.0
 
     /** Frame time of the current UI frame, System.nanoTime() clock. */
     var now by mutableLongStateOf(0L)
@@ -74,10 +74,26 @@ object AppState {
         private set
     var phrase by mutableStateOf<List<PhraseNote>>(emptyList())
         private set
+    /** Verdict of the player's last bar, and the beat where that bar ended. */
     var evaluation by mutableStateOf<Evaluation?>(null)
         private set
-    private var nextPhrase: List<PhraseNote> = emptyList()
-    private var evaluated = false
+    var evaluationEnd by mutableStateOf(Double.NaN)
+        private set
+    var attempts by mutableIntStateOf(0)
+        private set
+    var passes by mutableIntStateOf(0)
+        private set
+    var inARow by mutableIntStateOf(0)
+        private set
+    /** Set when the player asked for "Risenti" or "Prossima": the new round starts at this beat. */
+    var pendingStart by mutableStateOf<Long?>(null)
+        private set
+    var pendingIsReplay by mutableStateOf(false)
+        private set
+    private var pendingPhrase: List<PhraseNote> = emptyList()
+    private var pendingRound = 1
+    /** Start of the next player's bar to judge. */
+    private var nextBar = 0.0
     /** False until the fresh beat grid is seen: a grid left over from before must not end a round. */
     private var armed = false
     private var previousPosition = Double.NaN
@@ -99,8 +115,7 @@ object AppState {
                 rel < 0 -> RipetiPhase.COUNT_IN
                 rel < COUNT_AT -> RipetiPhase.LISTEN
                 rel < ANSWER_AT -> RipetiPhase.COUNT
-                rel < RESULT_AT -> RipetiPhase.YOUR_TURN
-                else -> RipetiPhase.RESULT
+                else -> RipetiPhase.YOUR_TURN
             }
         }
 
@@ -189,18 +204,27 @@ object AppState {
 
     // ---- Ripeti ------------------------------------------------------------
 
-    /** From round 1: a bar of count-in, then listen, answer, result, again. */
+    /** From round 1: a bar of count-in, then listen, count, and the player's bars. */
     fun startRipeti() {
         Engine.nativeRepeatStop()
         Engine.nativeSetMetronome(false, bpm.toFloat())
         Engine.nativeSetMetronome(true, bpm.toFloat())
         round = 1
-        roundStart = 4L
-        evaluation = null
-        evaluated = false
         armed = false
         previousPosition = Double.NaN
-        phrase = unpackPhrase(Engine.nativeRepeatRound(round, roundStart, false, System.nanoTime()))
+        pendingStart = null
+        beginRound(4L, unpackPhrase(Engine.nativeRepeatRound(round, 4L, false, System.nanoTime())))
+    }
+
+    private fun beginRound(start: Long, notes: List<PhraseNote>) {
+        roundStart = start
+        phrase = notes
+        nextBar = start + ANSWER_AT
+        evaluation = null
+        evaluationEnd = Double.NaN
+        attempts = 0
+        passes = 0
+        inARow = 0
     }
 
     private fun stopRipeti() {
@@ -208,6 +232,26 @@ object AppState {
         Engine.nativeSetMetronome(false, bpm.toFloat())
         phrase = emptyList()
         evaluation = null
+        pendingStart = null
+    }
+
+    /** "Prossima": a new phrase, longer if at least one bar was right. */
+    fun nextPhrase() = scheduleRound(replay = false)
+
+    /** "Risenti": the same phrase again, with its count-in. */
+    fun replayPhrase() = scheduleRound(replay = true)
+
+    private fun scheduleRound(replay: Boolean) {
+        val pos = beatPosition
+        if (level != Level.RIPETI || pendingStart != null || pos.isNaN()) return
+        // The next bar line, at least half a beat away so the first note is scheduled in time.
+        var start = roundStart + 4L * kotlin.math.ceil((pos - roundStart) / 4.0).toLong()
+        if (start - pos < 0.5) start += 4L
+        val nextRound = if (!replay && passes > 0) round + 1 else round
+        pendingRound = nextRound
+        pendingIsReplay = replay
+        pendingPhrase = unpackPhrase(Engine.nativeRepeatRound(nextRound, start, replay, System.nanoTime()))
+        pendingStart = start
     }
 
     private fun followRipeti(pos: Double) {
@@ -221,27 +265,29 @@ object AppState {
                 if (previousPosition < at && pos >= at) flashes[n.pad] = System.nanoTime()
             }
         }
-        val rel = pos - roundStart
-        if (!evaluated && rel >= RESULT_AFTER) {
-            val e = Evaluation.unpack(Engine.nativeRepeatResult())
+        val pending = pendingStart
+        // Judge each finished bar of the player's turn, but not one cut short by a new round.
+        if (pos >= nextBar + JUDGE_AFTER && (pending == null || nextBar + 4 <= pending)) {
+            val e = Evaluation.unpack(Engine.nativeRepeatResult(nextBar.toLong()))
             evaluation = e
-            evaluated = true
+            evaluationEnd = nextBar + 4
+            attempts += 1
             if (e.passed) {
+                passes += 1
+                inARow += 1
                 if (round > bestRound) {
                     bestRound = round
                     save()
                 }
-                round += 1
+            } else {
+                inARow = 0
             }
-            // The next round goes in now, a bar ahead, so it is scheduled in time.
-            nextPhrase = unpackPhrase(
-                Engine.nativeRepeatRound(round, roundStart + ROUND_BEATS, !e.passed, System.nanoTime()),
-            )
+            nextBar += 4
         }
-        if (evaluated && rel >= ROUND_BEATS) {
-            roundStart += ROUND_BEATS
-            phrase = nextPhrase
-            evaluated = false
+        if (pending != null && pos >= pending) {
+            round = pendingRound
+            pendingStart = null
+            beginRound(pending, pendingPhrase)
         }
     }
 }

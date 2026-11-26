@@ -14,6 +14,23 @@ pub const MAX_NOTES: usize = 8;
 pub const ON_TIME_MS: f64 = 70.0;
 /// Beyond this distance a hit does not count as that note.
 pub const NEAR_MS: f64 = 160.0;
+/// A hit belongs to the bar starting at `s` when its beat is in
+/// `[s - BAR_LEAD, s + 4 - BAR_LEAD)`: bars tile without overlap, and a first
+/// note played a little early still counts in its own bar.
+pub const BAR_LEAD: f64 = 0.25;
+
+/// The hits that belong to the bar starting at `bar_start`, relative to it.
+pub fn hits_in_bar(hits: &[(u8, f64)], bar_start: f64, out: &mut [(u8, f64)]) -> usize {
+    let mut n = 0;
+    for &(pad, beat) in hits {
+        let rel = beat - bar_start;
+        if (-BAR_LEAD..4.0 - BAR_LEAD).contains(&rel) && n < out.len() {
+            out[n] = (pad, rel);
+            n += 1;
+        }
+    }
+    n
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Note {
@@ -287,6 +304,18 @@ mod tests {
         let e = evaluate(&phrase(), &[(0, 0.0), (1, 1.4), (3, 2.5)], MPB);
         assert_eq!(e.results()[1], NoteResult::Missed);
         assert_eq!(e.extra, 1);
+    }
+
+    #[test]
+    fn hits_go_to_exactly_one_bar() {
+        let hits = [(0, 7.8), (1, 8.0), (3, 11.7), (0, 11.8), (1, 12.1)];
+        let mut buf = [(0u8, 0.0); 8];
+        let n = hits_in_bar(&hits, 8.0, &mut buf);
+        assert_eq!(n, 3, "7.8 (early first note), 8.0 and 11.7 belong to the bar at 8");
+        let pads: Vec<u8> = buf[..n].iter().map(|h| h.0).collect();
+        assert_eq!(pads, vec![0, 1, 3]);
+        assert!((buf[0].1 + 0.2).abs() < 1e-9 && (buf[2].1 - 3.7).abs() < 1e-9);
+        assert_eq!(hits_in_bar(&hits, 12.0, &mut buf), 2, "11.8 and 12.1 belong to the next bar");
     }
 
     #[test]

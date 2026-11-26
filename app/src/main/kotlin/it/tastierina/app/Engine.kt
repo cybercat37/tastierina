@@ -33,8 +33,8 @@ object Engine {
      */
     external fun nativeRepeatRound(round: Int, listenStart: Long, keep: Boolean, seed: Long): Long
 
-    /** Judges the player's bar of the current round. */
-    external fun nativeRepeatResult(): Long
+    /** Judges the player's bar starting at beat [barStart]. */
+    external fun nativeRepeatResult(barStart: Long): Long
     external fun nativeRepeatStop()
 
     /** 1 exclusive path, 0 shared, -1 closed. */
