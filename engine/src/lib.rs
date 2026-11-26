@@ -6,6 +6,7 @@
 //! from a fixed pool.
 
 pub mod dsp;
+pub mod repeat;
 pub mod spsc;
 pub mod timing;
 pub mod voices;
@@ -19,6 +20,8 @@ use voices::{Pad, Sound, Voice};
 
 pub const MAX_VOICES: usize = 24;
 pub const QUEUE_LEN: usize = 256;
+/// Pads waiting to be played at a future beat.
+pub const MAX_SCHEDULED: usize = 32;
 pub const BPM_MIN: f32 = 50.0;
 pub const BPM_MAX: f32 = 180.0;
 
@@ -30,6 +33,11 @@ pub enum Command {
     Metronome { on: bool, bpm: f32 },
     /// Master volume, 0..1.
     Volume(f32),
+    /// Play a pad at a beat position of the metronome grid (ignored when the
+    /// metronome is off, or when the beat has already passed).
+    Schedule { pad: u8, beat: f64 },
+    /// Forget every scheduled pad.
+    ClearScheduled,
 }
 
 /// State the audio thread publishes for the UI thread.
@@ -90,6 +98,9 @@ pub struct Renderer {
     metronome: Metronome,
     volume: f32,
     seed: u32,
+    /// (pad, beat) slots; `None` is free.
+    scheduled: [Option<(u8, f64)>; MAX_SCHEDULED],
+    scheduled_count: usize,
 }
 
 /// Makes a connected pair for a stream running at `sample_rate`.
@@ -111,6 +122,8 @@ pub fn engine(sample_rate: f64) -> (Control, Renderer) {
         metronome: Metronome { on: false, grid: BeatGrid::new(0.0, 90.0, sample_rate), next_beat: 0 },
         volume: 0.8,
         seed: 0x9E37_79B9,
+        scheduled: [None; MAX_SCHEDULED],
+        scheduled_count: 0,
     };
     (Control { tx, shared }, renderer)
 }
@@ -129,6 +142,9 @@ impl Renderer {
                     let accent = self.metronome.next_beat.rem_euclid(4) == 0;
                     self.start(Sound::Tick(accent), 1.0);
                     self.metronome.next_beat += 1;
+                }
+                if self.scheduled_count > 0 {
+                    self.play_due();
                 }
             }
             let mut mix = 0.0;
@@ -151,6 +167,8 @@ impl Renderer {
             }
             Command::Metronome { on: false, .. } => {
                 self.metronome.on = false;
+                self.scheduled = [None; MAX_SCHEDULED];
+                self.scheduled_count = 0;
                 self.shared.metronome_on.store(false, Ordering::Release);
             }
             Command::Metronome { on: true, bpm } => {
@@ -171,6 +189,35 @@ impl Renderer {
                 self.shared.metronome_on.store(true, Ordering::Release);
             }
             Command::Volume(v) => self.volume = v.clamp(0.0, 1.0),
+            Command::Schedule { pad, beat } => {
+                let past = self.metronome.on && self.metronome.grid.position(self.frame as f64) > beat;
+                if !self.metronome.on || past || Pad::from_index(pad).is_none() {
+                    return;
+                }
+                if let Some(slot) = self.scheduled.iter_mut().find(|s| s.is_none()) {
+                    *slot = Some((pad, beat));
+                    self.scheduled_count += 1;
+                }
+            }
+            Command::ClearScheduled => {
+                self.scheduled = [None; MAX_SCHEDULED];
+                self.scheduled_count = 0;
+            }
+        }
+    }
+
+    fn play_due(&mut self) {
+        let pos = self.metronome.grid.position(self.frame as f64);
+        for i in 0..MAX_SCHEDULED {
+            if let Some((pad, beat)) = self.scheduled[i] {
+                if pos >= beat {
+                    self.scheduled[i] = None;
+                    self.scheduled_count -= 1;
+                    if let Some(p) = Pad::from_index(pad) {
+                        self.start(Sound::Pad(p), 1.0);
+                    }
+                }
+            }
         }
     }
 
@@ -248,6 +295,36 @@ mod tests {
         let out = run(&mut r, 48_000);
         assert!(out[4800..].iter().all(|s| s.abs() < 1e-3));
         assert!(c.shared.grid().is_none());
+    }
+
+    #[test]
+    fn scheduled_pads_play_on_their_beat() {
+        let (mut c, mut r) = engine(SR);
+        c.send(Command::Metronome { on: true, bpm: 120.0 });
+        c.send(Command::Volume(1.0));
+        run(&mut r, 480);
+        let grid = c.shared.grid().unwrap();
+        // A tom at beat 2.5 (between ticks): silence before, sound right after.
+        c.send(Command::Schedule { pad: 4, beat: 2.5 });
+        c.send(Command::Schedule { pad: 4, beat: -1.0 }); // already past: dropped
+        let out = run(&mut r, 48_000 * 2);
+        let at = grid.origin + 2.5 * grid.frames_per_beat - 480.0;
+        let at = at.ceil() as usize;
+        assert!(out[at - 2000..at].iter().all(|s| s.abs() < 1e-3), "nothing before the beat");
+        assert!(out[at..at + 400].iter().any(|s| s.abs() > 0.1), "the tom on the beat");
+    }
+
+    #[test]
+    fn clearing_drops_what_was_scheduled() {
+        let (mut c, mut r) = engine(SR);
+        c.send(Command::Metronome { on: true, bpm: 120.0 });
+        run(&mut r, 480);
+        let grid = c.shared.grid().unwrap();
+        c.send(Command::Schedule { pad: 4, beat: 1.5 });
+        c.send(Command::ClearScheduled);
+        let out = run(&mut r, 48_000);
+        let at = (grid.origin + 1.5 * grid.frames_per_beat - 480.0).ceil() as usize;
+        assert!(out[at..at + 2000].iter().all(|s| s.abs() < 1e-3));
     }
 
     #[test]

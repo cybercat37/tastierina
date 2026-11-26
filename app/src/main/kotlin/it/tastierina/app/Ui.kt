@@ -116,6 +116,7 @@ fun TastierinaApp() {
         Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             PadGrid(Modifier.weight(1f).fillMaxHeight())
             if (s.tempo) TempoPanel(Modifier.width(160.dp).fillMaxHeight())
+            if (s.level == Level.RIPETI) RipetiPanel(Modifier.width(206.dp).fillMaxHeight())
         }
     }
 
@@ -137,15 +138,15 @@ private fun TopBar(onLevels: () -> Unit, onSound: () -> Unit, onHelp: () -> Unit
                 .background(if (s.audioOk) Color(0xFFFFE27A) else Color(0xFF5E130C)),
         )
         Text("Tastierina", color = C.ink, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.8).sp)
-        Pill(dark = true, label = "Livello 0, Pad. Cambia livello", onClick = onLevels) {
-            Text("0", fontFamily = Mono, fontSize = 17.sp, color = C.ivory.copy(alpha = 0.75f))
+        Pill(dark = true, label = "Livello ${s.level.number}, ${s.level.title}. Cambia livello", onClick = onLevels) {
+            Text(s.level.number, fontFamily = Mono, fontSize = 17.sp, color = C.ivory.copy(alpha = 0.75f))
             Spacer(Modifier.width(6.dp))
-            Text("Pad", color = C.ivory, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            Text(s.level.title, color = C.ivory, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.width(4.dp))
             Text("▾", color = C.ivory, fontSize = 12.sp)
         }
         Lcd(Modifier.weight(1f))
-        if (s.tempo) {
+        if (s.metronomeRunning) {
             Pill(dark = true, label = "Velocità più lenta", onClick = { s.changeBpm(-5) }) {
                 Text("−", color = C.ivory, fontSize = 18.sp, fontWeight = FontWeight.Bold)
             }
@@ -154,18 +155,24 @@ private fun TopBar(onLevels: () -> Unit, onSound: () -> Unit, onHelp: () -> Unit
                 Text("+", color = C.ivory, fontSize = 18.sp, fontWeight = FontWeight.Bold)
             }
         }
-        Pill(
-            dark = false,
-            filled = s.tempo,
-            label = if (s.tempo) "Esci da Tieni il tempo" else "Tieni il tempo",
-            onClick = { s.setTempoMode(!s.tempo) },
-        ) {
-            Text(
-                if (s.tempo) "Fine" else "Tieni il tempo",
-                color = C.ink,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.SemiBold,
-            )
+        if (s.level == Level.PAD) {
+            Pill(
+                dark = false,
+                filled = s.tempo,
+                label = if (s.tempo) "Esci da Tieni il tempo" else "Tieni il tempo",
+                onClick = { s.setTempoMode(!s.tempo) },
+            ) {
+                Text(
+                    if (s.tempo) "Fine" else "Tieni il tempo",
+                    color = C.ink,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+        } else {
+            Pill(dark = false, label = "Ricomincia dal giro 1", onClick = { s.startRipeti() }) {
+                Text("Ricomincia", color = C.ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            }
         }
         RoundButton("Suono e volume", onSound) {
             Text("≡", color = C.ebony, fontSize = 18.sp, fontWeight = FontWeight.Bold)
@@ -179,8 +186,20 @@ private fun TopBar(onLevels: () -> Unit, onSound: () -> Unit, onHelp: () -> Unit
 @Composable
 private fun Lcd(modifier: Modifier) {
     val s = AppState
+    val e = s.evaluation
     val text = when {
         !s.audioOk -> "audio non disponibile: riapri l'app"
+        s.level == Level.RIPETI -> when (s.ripetiPhase) {
+            RipetiPhase.COUNT_IN -> "pronti: ascolta la frase..."
+            RipetiPhase.LISTEN -> "ASCOLTA"
+            RipetiPhase.YOUR_TURN -> "TOCCA TU!"
+            RipetiPhase.RESULT -> when {
+                e == null -> ""
+                e.perfect -> "PERFETTO! la prossima è più lunga"
+                e.passed -> "GIUSTO! la prossima è più lunga"
+                else -> "RIPROVA: stessa frase"
+            }
+        }
         s.tempo && s.beatPosition.isNaN() -> "pronti..."
         s.tempo -> "tocca la Cassa su ogni battito"
         s.lastPad >= 0 -> s.padNames[s.lastPad].uppercase() + "  ·  tocca, ascolta, ripeti"
@@ -191,7 +210,7 @@ private fun Lcd(modifier: Modifier) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        if (s.tempo) {
+        if (s.metronomeRunning) {
             val pos = s.beatPosition
             val lit = if (pos.isNaN() || pos < 0) -1 else Math.floorMod(floor(pos).toLong(), 4L).toInt()
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -348,6 +367,101 @@ private fun TempoPanel(modifier: Modifier) {
 }
 
 @Composable
+private fun RipetiPanel(modifier: Modifier) {
+    val s = AppState
+    val phase = s.ripetiPhase
+    val e = s.evaluation
+    val pos = s.beatPosition
+    val barStart = when (phase) {
+        RipetiPhase.LISTEN -> s.roundStart.toDouble()
+        RipetiPhase.YOUR_TURN -> s.roundStart + 4.0
+        else -> Double.NaN
+    }
+    val head = if (barStart.isNaN() || pos.isNaN()) -1 else floor((pos - barStart) * 2).toInt()
+    val (word, wordColor) = when (phase) {
+        RipetiPhase.COUNT_IN -> "Pronti" to C.ivory
+        RipetiPhase.LISTEN -> "Ascolta" to C.ivory
+        RipetiPhase.YOUR_TURN -> "Tocca tu" to C.accent
+        RipetiPhase.RESULT -> when {
+            e == null -> "" to C.ivory
+            e.perfect -> "Perfetto!" to C.good
+            e.passed -> "Giusto!" to C.good
+            else -> "Riprova" to C.miss
+        }
+    }
+    Column(
+        modifier.clip(RoundedCornerShape(16.dp)).background(C.well).padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Label("Giro")
+            Text("${s.round}", color = C.ivory, fontFamily = Mono, fontSize = 26.sp, lineHeight = 26.sp)
+        }
+        Text(word, color = wordColor, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, lineHeight = 26.sp)
+        // The bar in eighths: where the notes are, where the music is now.
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            for (step in 0 until 8) {
+                val noteIndex = s.phrase.indexOfFirst { it.step == step }
+                val note = s.phrase.getOrNull(noteIndex)
+                val result = if (phase == RipetiPhase.RESULT && noteIndex >= 0) e?.results?.getOrNull(noteIndex) else null
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Box(
+                        Modifier.width(18.dp).height(30.dp).clip(RoundedCornerShape(5.dp))
+                            .background(if (step % 2 == 0) Color(0xFF2C2E31) else Color(0xFF222326))
+                            .then(if (step == head) Modifier.border(2.dp, C.accent, RoundedCornerShape(5.dp)) else Modifier),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (note != null) {
+                            val color = C.padColors[note.pad]
+                            Box(
+                                Modifier.size(12.dp).clip(CircleShape).then(
+                                    if (phase == RipetiPhase.YOUR_TURN) Modifier.border(2.dp, color, CircleShape)
+                                    else Modifier.background(color),
+                                ),
+                            )
+                        }
+                    }
+                    Text(
+                        when (result) {
+                            NoteResult.ON_TIME -> "✓"
+                            NoteResult.EARLY -> "‹"
+                            NoteResult.LATE -> "›"
+                            NoteResult.MISSED -> "✗"
+                            null -> " "
+                        },
+                        color = when (result) {
+                            NoteResult.ON_TIME -> C.good
+                            NoteResult.EARLY, NoteResult.LATE -> C.near
+                            else -> C.miss
+                        },
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
+        }
+        val names = s.phrase.map { s.padNames[it.pad] }.distinct().joinToString(", ")
+        Text(
+            when {
+                phase == RipetiPhase.RESULT && e != null && !e.passed -> buildString {
+                    val missed = e.results.count { it == NoteResult.MISSED }
+                    if (missed > 0) append(if (missed == 1) "1 nota mancata" else "$missed note mancate")
+                    if (e.extra > 0) {
+                        if (isNotEmpty()) append(", ")
+                        append(if (e.extra == 1) "1 colpo in più" else "${e.extra} colpi in più")
+                    }
+                }
+                phase == RipetiPhase.RESULT && e != null && !e.perfect -> "‹ presto  › tardi"
+                else -> names
+            },
+            color = C.ivory.copy(alpha = 0.85f), fontSize = 14.sp, lineHeight = 18.sp,
+        )
+        Spacer(Modifier.weight(1f))
+        Text("record: giro ${s.bestRound}", color = C.ivory.copy(alpha = 0.7f), fontFamily = Mono, fontSize = 13.sp)
+    }
+}
+
+@Composable
 private fun Label(text: String) {
     Text(
         text.uppercase(),
@@ -428,31 +542,45 @@ private fun Sheet(onClose: () -> Unit, width: Dp, title: String, content: @Compo
 private fun LevelsDialog(onClose: () -> Unit) {
     val levels = listOf(
         Triple("0", "Pad", "Otto pad da colpire e il gioco del battito."),
+        Triple("0.5", "Ripeti", "L'app suona una frase sui pad, tu la ripeti a tempo."),
         Triple("1", "Tastierina", "La tastiera e le canzoni guidate a pallini."),
         Triple("2", "Ritmo", "Batteria a 16 passi e lezioni di ritmo."),
         Triple("3", "Groove", "Basso e melodia, registrazione dai tasti."),
         Triple("4", "Groovebox", "Giri A B C, battute e scaletta."),
     )
     Sheet(onClose, 720.dp, "Scegli il livello") {
-        Text("Nella versione nativa per ora c'è il livello 0: gli altri arrivano uno alla volta.", color = C.sheetMuted, fontSize = 16.sp, lineHeight = 22.sp)
+        Text("Tocca un livello per sceglierlo. I successivi arrivano uno alla volta.", color = C.sheetMuted, fontSize = 16.sp, lineHeight = 22.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             levels.forEachIndexed { i, (n, name, what) ->
-                val ready = i == 0
+                val available = Level.entries.getOrNull(i)
+                val ready = available == AppState.level
                 Column(
-                    Modifier.weight(1f).height(200.dp).clip(RoundedCornerShape(14.dp))
+                    Modifier.weight(1f).height(210.dp).clip(RoundedCornerShape(14.dp))
                         .then(
                             if (ready) Modifier.background(C.accent)
                             else Modifier.background(Color.White).border(1.5.dp, Color(0xFFB9B2A4), RoundedCornerShape(14.dp)),
+                        )
+                        .then(
+                            if (available != null) Modifier.clickable(onClickLabel = "Scegli $name") {
+                                AppState.selectLevel(available)
+                                onClose()
+                            } else Modifier,
                         )
                         .padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     val ink = if (ready) Color.White else C.sheetInk
-                    Text(n, color = ink, fontFamily = Mono, fontSize = 32.sp)
+                    Text(n, color = ink, fontFamily = Mono, fontSize = 30.sp)
                     Text(name, color = ink, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
                     Text(what, color = ink, fontSize = 14.sp, lineHeight = 18.sp)
                     Spacer(Modifier.weight(1f))
-                    Text(if (ready) "IN USO" else "IN ARRIVO", color = ink, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
+                    Text(
+                        when {
+                            ready -> "IN USO"
+                            available != null -> "TOCCA PER USARE"
+                            else -> "IN ARRIVO"
+                        },
+                        color = ink, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
                 }
             }
         }
@@ -493,6 +621,7 @@ private fun HelpDialog(onClose: () -> Unit) {
     val lines = listOf(
         "Pad" to "Tocca un pad per sentirlo. Puoi usare più dita insieme.",
         "Tieni il tempo" to "Parte il battito: tocca la Cassa su ogni colpo. Il pannello a destra dice se eri a tempo, oppure quanto prima o dopo il battito.",
+        "Ripeti" to "Livello 0.5: ascolta la frase nella prima battuta e ripetila nella seconda, a tempo. Se è giusta la prossima si allunga, se no la risenti.",
         "− BPM +" to "Cambia la velocità del battito, anche mentre suona.",
         "Livello" to "Da qui si sale di livello, man mano che arrivano.",
         "≡" to "Volume, e quanto ritardo ha l'audio su questo telefono.",

@@ -8,6 +8,7 @@ use std::ffi::c_void;
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 
+use engine::repeat::{evaluate, make_phrase, Phrase};
 use engine::timing::{heard_frame, judge};
 use engine::Command;
 
@@ -18,6 +19,20 @@ type JObj = *mut c_void;
 type JBoolean = u8;
 
 static OUTPUT: Mutex<Option<Output>> = Mutex::new(None);
+
+/// The round of "Ripeti" being played: the phrase, and the player's hits in their bar.
+struct Game {
+    phrase: Phrase,
+    /// Beat where the player's bar starts.
+    attempt_start: f64,
+    hits: [(u8, f64); 48],
+    count: usize,
+}
+
+static GAME: Mutex<Option<Game>> = Mutex::new(None);
+
+/// Hits this far outside the player's bar (in beats) are not part of the attempt.
+const ATTEMPT_MARGIN: f64 = 0.5;
 
 /// No judgment: the metronome is off.
 const NO_JUDGMENT: i64 = i64::MIN;
@@ -71,11 +86,13 @@ pub extern "system" fn Java_it_tastierina_app_Engine_nativeHit(
     velocity: f32,
     touch_nanos: i64,
 ) -> i64 {
+    let pad = pad.clamp(0, 255) as u8;
     with_output(NO_JUDGMENT, |o| {
-        o.control.send(Command::Hit { pad: pad.clamp(0, 255) as u8, velocity });
+        o.control.send(Command::Hit { pad, velocity });
         match o.control.shared.grid() {
             Some(grid) => {
                 let frame = heard_frame(o.presentation(touch_nanos), touch_nanos, o.sample_rate);
+                record_attempt_hit(pad, grid.position(frame));
                 judge(grid, frame, o.sample_rate).pack()
             }
             None => NO_JUDGMENT,
@@ -130,4 +147,71 @@ pub extern "system" fn Java_it_tastierina_app_Engine_nativeIsExclusive(_env: JEn
 #[no_mangle]
 pub extern "system" fn Java_it_tastierina_app_Engine_nativeSampleRate(_env: JEnv, _this: JObj) -> i32 {
     with_output(0, |o| o.sample_rate as i32)
+}
+
+fn record_attempt_hit(pad: u8, beat: f64) {
+    if let Ok(mut guard) = GAME.lock() {
+        if let Some(g) = guard.as_mut() {
+            let rel = beat - g.attempt_start;
+            if (-ATTEMPT_MARGIN..4.0 + ATTEMPT_MARGIN).contains(&rel) && g.count < g.hits.len() {
+                g.hits[g.count] = (pad, rel);
+                g.count += 1;
+            }
+        }
+    }
+}
+
+/// Starts a round of "Ripeti": the phrase plays in the bar starting at
+/// `listen_start` (a beat of the running metronome), the player answers in the
+/// next bar. With `keep`, the previous phrase is played again. Returns the
+/// packed phrase (engine::repeat::Phrase::pack).
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeRepeatRound(
+    _env: JEnv,
+    _this: JObj,
+    round: i32,
+    listen_start: i64,
+    keep: JBoolean,
+    seed: i64,
+) -> i64 {
+    // Locks are taken one at a time, always GAME after OUTPUT is released (nativeHit takes OUTPUT then GAME).
+    let previous = GAME.lock().ok().and_then(|g| g.as_ref().map(|g| g.phrase));
+    let phrase = match (keep != 0, previous) {
+        (true, Some(p)) => p,
+        _ => make_phrase(round.max(1) as u32, (seed ^ (seed >> 32)) as u32),
+    };
+    let start = listen_start as f64;
+    with_output((), |o| {
+        for n in phrase.notes() {
+            o.control.send(Command::Schedule { pad: n.pad, beat: start + n.beat() });
+        }
+    });
+    if let Ok(mut game) = GAME.lock() {
+        *game = Some(Game { phrase, attempt_start: start + 4.0, hits: [(0, 0.0); 48], count: 0 });
+    }
+    phrase.pack()
+}
+
+/// Judges the player's bar of the current round (engine::repeat::Evaluation::pack).
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeRepeatResult(_env: JEnv, _this: JObj) -> i64 {
+    let ms_per_beat = with_output(None, |o| {
+        o.control.shared.grid().map(|g| g.frames_per_beat / o.sample_rate * 1000.0)
+    });
+    let Ok(guard) = GAME.lock() else { return 0 };
+    match (guard.as_ref(), ms_per_beat) {
+        (Some(g), Some(mpb)) => evaluate(&g.phrase, &g.hits[..g.count], mpb).pack(),
+        (Some(g), None) => evaluate(&g.phrase, &[], 500.0).pack(),
+        _ => 0,
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeRepeatStop(_env: JEnv, _this: JObj) {
+    if let Ok(mut guard) = GAME.lock() {
+        guard.take();
+    }
+    with_output((), |o| {
+        o.control.send(Command::ClearScheduled);
+    });
 }

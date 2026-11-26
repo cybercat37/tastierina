@@ -7,6 +7,7 @@ interfaccia in Kotlin e Jetpack Compose.
 | Livello | Cosa aggiunge | Nativo |
 |---|---|---|
 | 0. Pad | Otto pad e il gioco "Tieni il tempo" | sì |
+| 0.5 Ripeti | L'app suona una frase sui pad, tu la ripeti a tempo; le frasi si allungano | sì |
 | 1. Tastierina | Tastiera con canzoni guidate a pallini | in arrivo |
 | 2. Ritmo | Batteria a 16 passi e lezioni di ritmo | in arrivo |
 | 3. Groove | Basso, melodia, registrazione dalla tastiera | in arrivo |

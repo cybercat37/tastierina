@@ -8,7 +8,8 @@ Tastierina: a groovebox for learning electronic dance music, one level at a
 time, as a native Android app.
 
 - `engine/`: the audio engine, pure Rust with no dependencies. Voices,
-  metronome, timing judge, SPSC command queue. Renders without allocating,
+  metronome, scheduled pads, timing judge, SPSC command queue, and
+  `repeat` (level 0.5: phrase generation and evaluation). Renders without allocating,
   locking or blocking.
 - `engine-android/`: `libtastierina.so`. Hand-written AAudio binding and the
   JNI functions behind `it.tastierina.app.Engine`. Empty on other platforms.
