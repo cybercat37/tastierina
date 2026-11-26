@@ -44,7 +44,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -52,12 +51,24 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import kotlin.math.abs
 import kotlin.math.floor
 
 private object C {
-    val shell = Color(0xFFCC3323)
-    val ink = Color(0xFFFFF4EE)
+    /** The instrument body: neutral, so colour is left to what means something. */
+    val body = Color(0xFF232427)
+    /** The one accent: something is active or chosen. */
+    val accent = Color(0xFFE2572F)
+    val ink = Color(0xFFF4F1EA)
+    val sheet = Color(0xFFFBF8F2)
+    val sheetInk = Color(0xFF17181A)
+    val sheetMuted = Color(0xFF3F464B)
     val ivory = Color(0xFFF7F2E7)
     val pad = Color(0xFFEAE4D7)
     val ebony = Color(0xFF1B1918)
@@ -69,7 +80,6 @@ private object C {
     val good = Color(0xFF7FD3A6)
     val near = Color(0xFFF0B429)
     val miss = Color(0xFFFF8A75)
-    val muted = Color(0xFF56626A)
     val padColors = listOf(
         Color(0xFFE2523F), Color(0xFFE89A3C), Color(0xFFD9B23A), Color(0xFF5FB7A6),
         Color(0xFF6E9BE0), Color(0xFFA07BD6), Color(0xFFF0B429), Color(0xFF7CC0FF),
@@ -93,7 +103,7 @@ fun TastierinaApp() {
     Column(
         Modifier
             .fillMaxSize()
-            .background(C.shell)
+            .background(C.body)
             .windowInsetsPadding(WindowInsets.displayCutout)
             .padding(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -152,7 +162,7 @@ private fun TopBar(onLevels: () -> Unit, onSound: () -> Unit, onHelp: () -> Unit
         ) {
             Text(
                 if (s.tempo) "Fine" else "Tieni il tempo",
-                color = if (s.tempo) C.ebony else C.ink,
+                color = C.ink,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.SemiBold,
             )
@@ -294,12 +304,12 @@ private fun TempoPanel(modifier: Modifier) {
     val (word, color) = when (j?.verdict) {
         null -> "—" to C.ivory
         Verdict.ON_TIME -> "A tempo!" to C.good
-        Verdict.EARLY -> "Un po' presto" to C.near
-        Verdict.LATE -> "Un po' tardi" to C.near
+        Verdict.EARLY -> "Presto" to C.near
+        Verdict.LATE -> "Tardi" to C.near
         Verdict.OFF -> "Fuori tempo" to C.miss
     }
     Column(
-        modifier.clip(RoundedCornerShape(16.dp)).background(C.ebony).padding(14.dp),
+        modifier.clip(RoundedCornerShape(16.dp)).background(C.well).padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Label("Ultimo colpo")
@@ -318,12 +328,18 @@ private fun TempoPanel(modifier: Modifier) {
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text("presto", color = C.ivory.copy(alpha = 0.7f), fontFamily = Mono, fontSize = 13.sp)
-            Text(
-                if (j != null) "%+.0f ms".format(j.offsetMs) else "",
-                color = C.ivory, fontFamily = Mono, fontSize = 13.sp,
-            )
             Text("tardi", color = C.ivory.copy(alpha = 0.7f), fontFamily = Mono, fontSize = 13.sp)
         }
+        // Distance in plain words: never a minus sign.
+        Text(
+            when {
+                j == null -> ""
+                abs(j.offsetMs) < 5 -> "proprio sul battito"
+                j.offsetMs < 0 -> "%.0f ms prima del battito".format(-j.offsetMs)
+                else -> "%.0f ms dopo il battito".format(j.offsetMs)
+            },
+            color = C.ivory, fontFamily = Mono, fontSize = 14.sp, lineHeight = 17.sp,
+        )
         Spacer(Modifier.weight(1f))
         Label("Di fila a tempo")
         Text("${s.streak}", color = C.ivory, fontFamily = Mono, fontSize = 40.sp, lineHeight = 40.sp)
@@ -357,8 +373,8 @@ private fun Pill(
             .clip(shape)
             .then(
                 when {
-                    dark -> Modifier.background(C.ebony)
-                    filled -> Modifier.background(C.ivory)
+                    dark -> Modifier.background(Color(0xFF34363A))
+                    filled -> Modifier.background(C.accent)
                     else -> Modifier.border(1.5.dp, C.ink.copy(alpha = 0.6f), shape)
                 },
             )
@@ -381,19 +397,27 @@ private fun RoundButton(label: String, onClick: () -> Unit, content: @Composable
 
 @Composable
 private fun Sheet(onClose: () -> Unit, width: Dp, title: String, content: @Composable () -> Unit) {
-    Dialog(onDismissRequest = onClose) {
+    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        val screen = LocalConfiguration.current
         Column(
-            Modifier.width(width).clip(RoundedCornerShape(20.dp)).background(C.ivory).padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            Modifier
+                .widthIn(max = width)
+                .fillMaxWidth(0.92f)
+                .heightIn(max = (screen.screenHeightDp * 0.9f).dp)
+                .clip(RoundedCornerShape(20.dp))
+                .background(C.sheet)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(title, color = C.ebony, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f))
+                Text(title, color = C.sheetInk, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f))
                 Box(
-                    Modifier.size(36.dp).clip(CircleShape).background(C.ebony)
+                    Modifier.size(44.dp).clip(CircleShape).background(C.sheetInk)
                         .clickable(onClickLabel = "Chiudi", onClick = onClose)
                         .semantics { contentDescription = "Chiudi" },
                     contentAlignment = Alignment.Center,
-                ) { Text("✕", color = C.ivory, fontSize = 14.sp) }
+                ) { Text("✕", color = C.ivory, fontSize = 16.sp) }
             }
             content()
         }
@@ -410,25 +434,25 @@ private fun LevelsDialog(onClose: () -> Unit) {
         Triple("4", "Groovebox", "Giri A B C, battute e scaletta."),
     )
     Sheet(onClose, 720.dp, "Scegli il livello") {
-        Text("Nella versione nativa per ora c'è il livello 0: gli altri arrivano uno alla volta.", color = C.muted, fontSize = 14.sp)
+        Text("Nella versione nativa per ora c'è il livello 0: gli altri arrivano uno alla volta.", color = C.sheetMuted, fontSize = 16.sp, lineHeight = 22.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             levels.forEachIndexed { i, (n, name, what) ->
                 val ready = i == 0
                 Column(
-                    Modifier.weight(1f).height(190.dp).clip(RoundedCornerShape(14.dp))
+                    Modifier.weight(1f).height(200.dp).clip(RoundedCornerShape(14.dp))
                         .then(
-                            if (ready) Modifier.background(C.shell)
-                            else Modifier.background(Color(0xFFFFFDF8)).border(1.5.dp, Color(0xFFCFC6B5), RoundedCornerShape(14.dp)),
+                            if (ready) Modifier.background(C.accent)
+                            else Modifier.background(Color.White).border(1.5.dp, Color(0xFFB9B2A4), RoundedCornerShape(14.dp)),
                         )
                         .padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    val ink = if (ready) C.ink else C.ebony
+                    val ink = if (ready) Color.White else C.sheetInk
                     Text(n, color = ink, fontFamily = Mono, fontSize = 32.sp)
-                    Text(name, color = ink, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
-                    Text(what, color = ink.copy(alpha = 0.85f), fontSize = 12.sp, lineHeight = 16.sp)
+                    Text(name, color = ink, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
+                    Text(what, color = ink, fontSize = 14.sp, lineHeight = 18.sp)
                     Spacer(Modifier.weight(1f))
-                    Text(if (ready) "IN USO" else "IN ARRIVO", color = ink.copy(alpha = 0.75f), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    Text(if (ready) "IN USO" else "IN ARRIVO", color = ink, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
                 }
             }
         }
@@ -448,18 +472,18 @@ private fun SoundDialog(onClose: () -> Unit) {
         }
     }
     Sheet(onClose, 460.dp, "Suono") {
-        Text("Volume", color = C.ebony, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        Text("Volume", color = C.sheetInk, fontSize = 17.sp, fontWeight = FontWeight.Bold)
         Slider(
             value = s.volume,
             onValueChange = { s.changeVolume(it) },
-            colors = SliderDefaults.colors(thumbColor = C.shell, activeTrackColor = C.shell),
+            colors = SliderDefaults.colors(thumbColor = C.accent, activeTrackColor = C.accent),
         )
         Text(
-            if (latency >= 0) "Ritardo dell'audio: %.0f ms · %d Hz · percorso %s".format(latency, rate, path)
+            if (latency >= 0) "Ritardo dell'audio su questo telefono: %.0f ms\n%d Hz · percorso %s".format(latency, rate, path)
             else "Audio non attivo",
-            color = C.muted,
-            fontSize = 13.sp,
-            style = TextStyle(fontFamily = Mono),
+            color = C.sheetMuted,
+            fontSize = 16.sp,
+            lineHeight = 22.sp,
         )
     }
 }
@@ -468,7 +492,7 @@ private fun SoundDialog(onClose: () -> Unit) {
 private fun HelpDialog(onClose: () -> Unit) {
     val lines = listOf(
         "Pad" to "Tocca un pad per sentirlo. Puoi usare più dita insieme.",
-        "Tieni il tempo" to "Parte il battito: tocca la Cassa su ogni colpo. Il pannello a destra dice se eri a tempo, presto o tardi, in millisecondi.",
+        "Tieni il tempo" to "Parte il battito: tocca la Cassa su ogni colpo. Il pannello a destra dice se eri a tempo, oppure quanto prima o dopo il battito.",
         "− BPM +" to "Cambia la velocità del battito, anche mentre suona.",
         "Livello" to "Da qui si sale di livello, man mano che arrivano.",
         "≡" to "Volume, e quanto ritardo ha l'audio su questo telefono.",
@@ -476,8 +500,8 @@ private fun HelpDialog(onClose: () -> Unit) {
     Sheet(onClose, 560.dp, "Come si usa") {
         lines.forEach { (k, v) ->
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(k, color = C.ebony, fontSize = 14.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.width(110.dp))
-                Text(v, color = C.ebony, fontSize = 14.sp, lineHeight = 19.sp, modifier = Modifier.weight(1f))
+                Text(k, color = C.sheetInk, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.width(130.dp))
+                Text(v, color = C.sheetInk, fontSize = 16.sp, lineHeight = 22.sp, modifier = Modifier.weight(1f))
             }
         }
     }
