@@ -14,6 +14,7 @@ enum class Level(val number: String, val title: String) {
     PAD("0", "Pad"),
     RIPETI("0.5", "Ripeti"),
     TASTI("1", "Tastierina"),
+    RITMO("2", "Ritmo"),
 }
 
 enum class PlayMode(val title: String) { IMPARA("Impara"), A_TEMPO("A tempo") }
@@ -165,7 +166,24 @@ object AppState {
     var result by mutableStateOf<PlayResult?>(null)
         private set
 
-    val metronomeRunning: Boolean get() = tempo || level == Level.RIPETI || demoStarts != null || takeRunning
+    // Ritmo
+    /** One bitmask per drum row: bit s is step s. */
+    val pattern = mutableStateListOf<Int>().apply { repeat(DRUM_NAMES.size) { add(0) } }
+    var drumsPlaying by mutableStateOf(false)
+        private set
+    var drumBpm by mutableIntStateOf(124)
+        private set
+    var lesson by mutableStateOf<Lesson?>(LESSONS.first())
+        private set
+    val lessonNow: LessonState? get() = lesson?.let { lessonState(it, pattern) }
+    /** Step under the playhead, or -1. */
+    val drumStep: Int
+        get() {
+            val pos = beatPosition
+            return if (!drumsPlaying || pos.isNaN() || pos < 0) -1 else Math.floorMod(kotlin.math.floor(pos * 4).toLong(), 16L).toInt()
+        }
+
+    val metronomeRunning: Boolean get() = tempo || level == Level.RIPETI || demoStarts != null || takeRunning || drumsPlaying
 
     /** Beats since the start of the current Ripeti round, or NaN. */
     val ripetiBeat: Double get() = beatPosition - roundStart
@@ -197,6 +215,11 @@ object AppState {
         level = Level.entries.getOrNull(p.getInt("level", 0)) ?: Level.PAD
         playMode = PlayMode.entries.getOrNull(p.getInt("playMode", 0)) ?: PlayMode.IMPARA
         slow = p.getBoolean("slow", true)
+        drumBpm = p.getInt("drumBpm", 124).coerceIn(70, 180)
+        lesson = LESSONS.firstOrNull { it.id == p.getString("lesson", LESSONS.first().id) }
+        p.getString("pattern", null)?.split(',')?.forEachIndexed { i, v ->
+            if (i < pattern.size) pattern[i] = v.toIntOrNull() ?: 0
+        }
         resetMarks()
     }
 
@@ -214,6 +237,9 @@ object AppState {
             ?.putInt("level", level.ordinal)
             ?.putInt("playMode", playMode.ordinal)
             ?.putBoolean("slow", slow)
+            ?.putInt("drumBpm", drumBpm)
+            ?.putString("lesson", lesson?.id ?: "")
+            ?.putString("pattern", pattern.joinToString(","))
             ?.apply()
     }
 
@@ -223,11 +249,13 @@ object AppState {
         Engine.nativeSetVolume(volume)
         if (tempo) Engine.nativeSetMetronome(true, bpm.toFloat())
         if (level == Level.RIPETI) startRipeti()
+        pushPattern()
     }
 
     fun stopAudio() {
         // A new stream starts clean: nothing held, nothing playing by itself.
         takeRunning = false
+        drumsPlaying = false
         demoStarts = null
         demoKey = -1
         for (i in 0 until KEY_COUNT) held[i] = 0
@@ -268,6 +296,7 @@ object AppState {
         if (l == level) return
         if (level == Level.RIPETI) stopRipeti()
         if (level == Level.TASTI) leaveKeyboard()
+        if (level == Level.RITMO) stopDrums()
         if (tempo) setTempoMode(false)
         level = l
         if (l == Level.RIPETI) startRipeti()
@@ -616,5 +645,63 @@ object AppState {
         stopDemo()
         stopTake()
         releaseAllKeys()
+    }
+
+    // ---- Ritmo ---------------------------------------------------------------
+
+    private fun pushPattern() {
+        pattern.forEachIndexed { t, row -> Engine.nativeSetPattern(t, row) }
+    }
+
+    fun isOn(track: Int, step: Int) = pattern[track] and (1 shl step) != 0
+
+    fun setStep(track: Int, step: Int, on: Boolean) {
+        if (track !in pattern.indices || step !in 0 until DRUM_STEPS || isOn(track, step) == on) return
+        pattern[track] = if (on) pattern[track] or (1 shl step) else pattern[track] and (1 shl step).inv()
+        Engine.nativeSetStep(track, step, on)
+        if (on && !drumsPlaying) Engine.nativeDrum(track)
+        save()
+    }
+
+    fun clearPattern() {
+        for (i in pattern.indices) pattern[i] = 0
+        pushPattern()
+        save()
+    }
+
+    /** A lesson starts from an empty grid at its own tempo. */
+    fun selectLesson(l: Lesson?) {
+        lesson = l
+        if (l != null) {
+            clearPattern()
+            setDrumBpm(l.bpm)
+        }
+        save()
+    }
+
+    fun playDrums() {
+        if (drumsPlaying) return
+        Engine.nativeSetMetronome(false, drumBpm.toFloat())
+        Engine.nativeSetClick(false)
+        Engine.nativeSetMetronome(true, drumBpm.toFloat())
+        pushPattern()
+        Engine.nativeSequencer(true)
+        drumsPlaying = true
+    }
+
+    fun stopDrums() {
+        if (!drumsPlaying) return
+        drumsPlaying = false
+        Engine.nativeSequencer(false)
+        Engine.nativeSetMetronome(false, drumBpm.toFloat())
+        Engine.nativeSetClick(true)
+    }
+
+    fun changeDrumBpm(delta: Int) = setDrumBpm(drumBpm + delta)
+
+    private fun setDrumBpm(v: Int) {
+        drumBpm = v.coerceIn(70, 180)
+        if (drumsPlaying) Engine.nativeSetMetronome(true, drumBpm.toFloat())
+        save()
     }
 }

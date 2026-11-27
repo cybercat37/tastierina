@@ -120,6 +120,8 @@ pub enum Sound {
     Tick(bool),
     /// Count-in before the player's turn; `true` for the last count ("1": go).
     Count(bool),
+    /// The open hi-hat of the drum machine (level 2).
+    OpenHat,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -346,6 +348,13 @@ impl Voice {
                 self.filter = Biquad::new(FilterKind::LowPass, sr, 2600.0, 0.7);
                 self.len = secs(1.3);
             }
+            Sound::OpenHat => {
+                self.gain = 0.34 * v;
+                self.gain_k = decay_coef(sr, 0.34);
+                self.filter = Biquad::new(FilterKind::HighPass, sr, 7000.0, 0.7);
+                self.filter2 = Biquad::new(FilterKind::HighPass, sr, 7000.0, 0.7);
+                self.len = secs(0.45);
+            }
             Sound::Count(go) => {
                 // A short square beep, a fifth or an octave above the tick.
                 self.gain = 0.32 * v.max(0.5);
@@ -405,7 +414,7 @@ impl Voice {
                 }
                 self.filter.process(self.noise.next()) * env * 1.6
             }
-            Sound::Pad(Pad::Hat) => {
+            Sound::Pad(Pad::Hat) | Sound::OpenHat => {
                 let n = self.filter2.process(self.filter.process(self.noise.next()));
                 n * self.gain
             }
@@ -599,6 +608,7 @@ mod tests {
         all.push(Sound::Tick(false));
         all.push(Sound::Count(true));
         all.push(Sound::Count(false));
+        all.push(Sound::OpenHat);
         for s in all {
             let out = render(s);
             assert!(out.len() < 48_000 * 3, "{s:?} never stops");

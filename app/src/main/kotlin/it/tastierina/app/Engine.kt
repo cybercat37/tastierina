@@ -61,6 +61,14 @@ object Engine {
     external fun nativeTakeNextPending(): Int
     external fun nativeTakeSummary(): Long
 
+    // Drum machine (level 2): rows 0 cassa, 1 rullante, 2 clap, 3 hat chiuso, 4 hat aperto.
+    external fun nativeSetStep(track: Int, step: Int, on: Boolean)
+    /** Bit s of [steps] is step s. */
+    external fun nativeSetPattern(track: Int, steps: Int)
+    /** Plays the pattern on the running metronome, a step per sixteenth. */
+    external fun nativeSequencer(on: Boolean)
+    external fun nativeDrum(track: Int)
+
     /** 1 exclusive path, 0 shared, -1 closed. */
     external fun nativeIsExclusive(): Int
     external fun nativeSampleRate(): Int

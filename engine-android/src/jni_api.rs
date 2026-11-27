@@ -365,3 +365,35 @@ pub extern "system" fn Java_it_tastierina_app_Engine_nativeScheduleCount(_env: J
         o.control.send(Command::ScheduleCount { beat, go: go != 0 });
     })
 }
+
+// ---- Drum machine (level 2) -------------------------------------------------
+
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeSetStep(_env: JEnv, _this: JObj, track: i32, step: i32, on: JBoolean) {
+    with_output((), |o| {
+        o.control.send(Command::SetStep { track: track.clamp(0, 255) as u8, step: step.clamp(0, 255) as u8, on: on != 0 });
+    })
+}
+
+/// A whole row: bit s of `steps` is step s.
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeSetPattern(_env: JEnv, _this: JObj, track: i32, steps: i32) {
+    with_output((), |o| {
+        o.control.send(Command::SetPattern { track: track.clamp(0, 255) as u8, steps: (steps & 0xFFFF) as u16 });
+    })
+}
+
+/// Starts or stops the drum machine on the running metronome.
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeSequencer(_env: JEnv, _this: JObj, on: JBoolean) {
+    with_output((), |o| {
+        o.control.send(Command::Sequencer(on != 0));
+    })
+}
+
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeDrum(_env: JEnv, _this: JObj, track: i32) {
+    with_output((), |o| {
+        o.control.send(Command::Drum { track: track.clamp(0, 255) as u8 });
+    })
+}

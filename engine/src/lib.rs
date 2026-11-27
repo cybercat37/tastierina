@@ -21,6 +21,23 @@ use voices::{Pad, Sound, Timbre, Voice};
 
 pub const MAX_VOICES: usize = 24;
 pub const QUEUE_LEN: usize = 256;
+/// Rows of the drum machine (level 2): cassa, rullante, clap, hat chiuso, hat aperto.
+pub const DRUM_TRACKS: usize = 5;
+/// Steps of a drum pattern: sixteenths of one 4/4 bar.
+pub const DRUM_STEPS: i64 = 16;
+
+/// The sound of a drum-machine row.
+pub fn drum_sound(track: u8) -> Option<Sound> {
+    match track {
+        0 => Some(Sound::Pad(Pad::Kick)),
+        1 => Some(Sound::Pad(Pad::Snare)),
+        2 => Some(Sound::Pad(Pad::Clap)),
+        3 => Some(Sound::Pad(Pad::Hat)),
+        4 => Some(Sound::OpenHat),
+        _ => None,
+    }
+}
+
 /// Events waiting for a future beat: enough for a whole song's notes and releases.
 pub const MAX_SCHEDULED: usize = 160;
 
@@ -58,6 +75,14 @@ pub enum Command {
     ScheduleNote { midi: u8, timbre: u8, beat: f64, length: f64 },
     /// Whether the metronome ticks are heard (the grid keeps running either way).
     Click(bool),
+    /// Turn one step of a drum row on or off.
+    SetStep { track: u8, step: u8, on: bool },
+    /// A whole drum row at once: bit `s` is step `s`.
+    SetPattern { track: u8, steps: u16 },
+    /// Start or stop the drum machine; it plays on the metronome grid, a step per sixteenth.
+    Sequencer(bool),
+    /// Play one drum row's sound now (to hear a step when it is turned on).
+    Drum { track: u8 },
     /// Forget everything scheduled.
     ClearScheduled,
 }
@@ -126,6 +151,10 @@ pub struct Renderer {
     /// Earliest scheduled beat, so the per-sample check is one comparison.
     next_due: f64,
     click: bool,
+    pattern: [u16; DRUM_TRACKS],
+    sequencer: bool,
+    /// Next sixteenth to play, counted from beat 0 of the grid.
+    next_step: i64,
 }
 
 /// Makes a connected pair for a stream running at `sample_rate`.
@@ -151,6 +180,9 @@ pub fn engine(sample_rate: f64) -> (Control, Renderer) {
         scheduled_count: 0,
         next_due: f64::INFINITY,
         click: true,
+        pattern: [0; DRUM_TRACKS],
+        sequencer: false,
+        next_step: 0,
     };
     (Control { tx, shared }, renderer)
 }
@@ -171,6 +203,20 @@ impl Renderer {
                         self.start(Sound::Tick(accent), 1.0);
                     }
                     self.metronome.next_beat += 1;
+                }
+                if self.sequencer {
+                    let due = self.metronome.grid.origin + self.metronome.grid.frames_per_beat * self.next_step as f64 / 4.0;
+                    if self.frame as f64 >= due {
+                        let step = self.next_step.rem_euclid(DRUM_STEPS) as u16;
+                        for track in 0..DRUM_TRACKS {
+                            if self.pattern[track] & (1 << step) != 0 {
+                                if let Some(sound) = drum_sound(track as u8) {
+                                    self.start(sound, 1.0);
+                                }
+                            }
+                        }
+                        self.next_step += 1;
+                    }
                 }
                 if self.scheduled_count > 0 && self.metronome.grid.position(self.frame as f64) >= self.next_due {
                     self.play_due();
@@ -196,6 +242,7 @@ impl Renderer {
             }
             Command::Metronome { on: false, .. } => {
                 self.metronome.on = false;
+                self.sequencer = false;
                 self.clear_scheduled();
                 self.shared.metronome_on.store(false, Ordering::Release);
             }
@@ -239,6 +286,30 @@ impl Renderer {
                 }
             }
             Command::Click(on) => self.click = on,
+            Command::SetStep { track, step, on } => {
+                if (track as usize) < DRUM_TRACKS && (step as i64) < DRUM_STEPS {
+                    let bit = 1u16 << step;
+                    let row = &mut self.pattern[track as usize];
+                    *row = if on { *row | bit } else { *row & !bit };
+                }
+            }
+            Command::SetPattern { track, steps } => {
+                if let Some(row) = self.pattern.get_mut(track as usize) {
+                    *row = steps;
+                }
+            }
+            Command::Sequencer(on) => {
+                self.sequencer = on && self.metronome.on;
+                if self.sequencer {
+                    let pos = self.metronome.grid.position(self.frame as f64);
+                    self.next_step = (pos * 4.0).ceil().max(0.0) as i64;
+                }
+            }
+            Command::Drum { track } => {
+                if let Some(sound) = drum_sound(track) {
+                    self.start(sound, 1.0);
+                }
+            }
         }
     }
 
@@ -449,6 +520,58 @@ mod tests {
         assert!(out[..frame(1.0)].iter().all(|s| s.abs() < 1e-3), "silent before, no click");
         assert!(out[frame(1.0)..frame(1.9)].iter().any(|s| s.abs() > 0.05), "sounds for its length");
         assert!(out[frame(2.6)..frame(3.0)].iter().all(|s| s.abs() < 1e-3), "released after");
+    }
+
+    /// Where the output turns audible after a silence, as sixteenth steps at 120 BPM from `origin`.
+    fn onsets(out: &[f32], origin: f64) -> Vec<i64> {
+        let step = 6000.0;
+        let mut found = Vec::new();
+        let mut quiet = 0usize;
+        for (i, s) in out.iter().enumerate() {
+            if s.abs() > 0.02 {
+                if quiet > 1500 {
+                    found.push(((i as f64 - origin) / step).round() as i64);
+                }
+                quiet = 0;
+            } else {
+                quiet += 1;
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn the_drum_machine_plays_its_steps_on_the_grid() {
+        let (mut c, mut r) = engine(SR);
+        c.send(Command::Metronome { on: true, bpm: 120.0 });
+        c.send(Command::Click(false));
+        // Kick on steps 0 and 8, hat on step 4.
+        c.send(Command::SetPattern { track: 0, steps: 0b0000_0001_0000_0001 });
+        c.send(Command::SetStep { track: 3, step: 4, on: true });
+        c.send(Command::Sequencer(true));
+        let out = run(&mut r, 48_000 * 4);
+        let grid = c.shared.grid().unwrap();
+        let hits = onsets(&out, grid.origin);
+        assert_eq!(&hits[..6], &[0, 4, 8, 16, 20, 24], "two bars of the pattern: {hits:?}");
+    }
+
+    #[test]
+    fn steps_change_while_playing_and_stop_stops() {
+        let (mut c, mut r) = engine(SR);
+        c.send(Command::Metronome { on: true, bpm: 120.0 });
+        c.send(Command::Click(false));
+        c.send(Command::SetStep { track: 4, step: 0, on: true });
+        c.send(Command::Sequencer(true));
+        run(&mut r, 48_000); // half a bar at 120 BPM: the open hat on step 0 has played
+        c.send(Command::SetStep { track: 4, step: 0, on: false });
+        c.send(Command::SetStep { track: 1, step: 8, on: true });
+        let out = run(&mut r, 48_000);
+        let grid = c.shared.grid().unwrap();
+        let hits = onsets(&out, grid.origin - 48_000.0);
+        assert_eq!(hits, vec![8], "the new snare on step 8, nothing else: {hits:?}");
+        c.send(Command::Sequencer(false));
+        let after = run(&mut r, 48_000 * 2);
+        assert!(after[24_000..].iter().all(|s| s.abs() < 1e-3));
     }
 
     #[test]

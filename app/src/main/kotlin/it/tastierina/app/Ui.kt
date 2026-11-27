@@ -115,6 +115,8 @@ fun TastierinaApp() {
         )
         if (s.level == Level.TASTI) {
             TastiScreen(Modifier.weight(1f).fillMaxWidth())
+        } else if (s.level == Level.RITMO) {
+            RitmoScreen(Modifier.weight(1f).fillMaxWidth())
         } else Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (s.level == Level.RIPETI) TurnBar(Modifier.fillMaxWidth().height(46.dp))
@@ -151,7 +153,24 @@ private fun TopBar(onLevels: () -> Unit, onSound: () -> Unit, onHelp: () -> Unit
             Text("▾", color = C.ivory, fontSize = 12.sp)
         }
         Lcd(Modifier.weight(1f))
-        if (s.metronomeRunning && s.level != Level.TASTI) {
+        if (s.level == Level.RITMO) {
+            Pill(dark = true, label = "Velocità più lenta", onClick = { s.changeDrumBpm(-2) }) {
+                Text("−", color = C.ivory, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            }
+            Text("${s.drumBpm} BPM", color = C.ink, fontFamily = Mono, fontSize = 18.sp)
+            Pill(dark = true, label = "Velocità più veloce", onClick = { s.changeDrumBpm(2) }) {
+                Text("+", color = C.ivory, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            }
+            Pill(
+                dark = false,
+                filled = s.drumsPlaying,
+                label = if (s.drumsPlaying) "Ferma il ritmo" else "Fai suonare il ritmo",
+                onClick = { if (s.drumsPlaying) s.stopDrums() else s.playDrums() },
+            ) {
+                Text(if (s.drumsPlaying) "Ferma" else "Suona", color = C.ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
+        if (s.metronomeRunning && s.level != Level.TASTI && s.level != Level.RITMO) {
             Pill(dark = true, label = "Velocità più lenta", onClick = { s.changeBpm(-5) }) {
                 Text("−", color = C.ivory, fontSize = 18.sp, fontWeight = FontWeight.Bold)
             }
@@ -160,7 +179,9 @@ private fun TopBar(onLevels: () -> Unit, onSound: () -> Unit, onHelp: () -> Unit
                 Text("+", color = C.ivory, fontSize = 18.sp, fontWeight = FontWeight.Bold)
             }
         }
-        if (s.level == Level.TASTI) {
+        if (s.level == Level.RITMO) {
+            // Suona/Ferma sits with the tempo controls above.
+        } else if (s.level == Level.TASTI) {
             if (s.song != null && s.playMode == PlayMode.A_TEMPO) {
                 Pill(
                     dark = false,
@@ -216,6 +237,7 @@ private fun Lcd(modifier: Modifier) {
     val e = s.evaluation
     val text = when {
         !s.audioOk -> "audio non disponibile: riapri l'app"
+        s.level == Level.RITMO -> ritmoLcd()
         s.level == Level.TASTI -> {
             val sg = s.song
             val errs = if (s.errors > 0) " · ${if (s.errors == 1) "1 errore" else "${s.errors} errori"}" else ""
@@ -723,6 +745,7 @@ private fun HelpDialog(onClose: () -> Unit) {
         "Tieni il tempo" to "Parte il battito: tocca la Cassa su ogni colpo. Il pannello a destra dice se eri a tempo, oppure quanto prima o dopo il battito.",
         "Ripeti" to "Livello 0.5: ascolta la frase, aspetta il conto 4, 3, 2, 1 e ripetila a tempo, battuta dopo battuta, quante volte vuoi. La prima nota cade proprio dopo l'1. Ogni battuta ha il suo esito. Risenti la fa riascoltare, Prossima passa a una frase nuova, più lunga se almeno una battuta era giusta.",
         "Impara / A tempo" to "In Impara la canzone ti aspetta e conta i tasti sbagliati. In A tempo parte il metronomo con il conto 4, 3, 2, 1 e ogni nota va suonata al momento giusto: la striscia la colora verde a tempo, gialla presto o tardi, rossa mancata. Alla fine arrivano le stelle e un consiglio.",
+        "Ritmo" to "Livello 2: una griglia di 16 caselle per ogni suono di batteria, una casella per sedicesimo di battuta. Tocca per accendere o spegnere, trascina lungo una riga per accenderne tante. Le lezioni House, Techno e Drum and bass ti guidano una riga alla volta con i pallini verdi.",
         "Tastierina" to "Livello 1: 18 tasti da suonare con più dita, anche trascinando. Scegli una canzone: il pallino pieno è il tasto da premere, il cerchietto quello dopo, e la canzone ti aspetta. Ascolta la fa sentire intera.",
         "− BPM +" to "Cambia la velocità del battito, anche mentre suona.",
         "Livello" to "Da qui si sale di livello, man mano che arrivano.",
