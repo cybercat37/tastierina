@@ -122,6 +122,73 @@ pub enum Sound {
     Count(bool),
     /// The open hi-hat of the drum machine (level 2).
     OpenHat,
+    /// The other sounds of the drum machine.
+    Kit(Kit),
+}
+
+/// Extra drum-machine sounds, built from three layers: a gliding sine (tone),
+/// filtered noise, and detuned squares (metal).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kit {
+    TomHigh,
+    Rimshot,
+    Shaker,
+    Ride,
+    Crash,
+    Conga,
+    Clave,
+    Tambourine,
+    Kick808,
+}
+
+impl Kit {
+    pub const ALL: [Kit; 9] = [
+        Kit::TomHigh,
+        Kit::Rimshot,
+        Kit::Shaker,
+        Kit::Ride,
+        Kit::Crash,
+        Kit::Conga,
+        Kit::Clave,
+        Kit::Tambourine,
+        Kit::Kick808,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Kit::TomHigh => "tom-alto",
+            Kit::Rimshot => "rimshot",
+            Kit::Shaker => "shaker",
+            Kit::Ride => "ride",
+            Kit::Crash => "crash",
+            Kit::Conga => "conga",
+            Kit::Clave => "clave",
+            Kit::Tambourine => "tamburello",
+            Kit::Kick808 => "cassa-808",
+        }
+    }
+}
+
+/// (start Hz, end Hz, glide s, level, decay s) of the tone layer.
+type Tone = (f32, f32, f32, f32, f32);
+/// (filter, Hz, Q, level, decay s, attack s) of the noise layer.
+type NoiseLayer = (FilterKind, f32, f32, f32, f32, f32);
+/// (three square frequencies, level, decay s) of the metal layer.
+type Metal = ([f32; 3], f32, f32);
+
+fn kit_spec(k: Kit) -> (Option<Tone>, Option<NoiseLayer>, Option<Metal>, f32) {
+    use FilterKind::*;
+    match k {
+        Kit::TomHigh => (Some((320.0, 165.0, 0.06, 0.75, 0.28)), None, None, 0.4),
+        Kit::Rimshot => (Some((1700.0, 1650.0, 0.01, 0.45, 0.03)), Some((HighPass, 2000.0, 0.8, 0.5, 0.05, 0.0)), None, 0.12),
+        Kit::Shaker => (None, Some((BandPass, 6000.0, 1.2, 0.9, 0.08, 0.015)), None, 0.18),
+        Kit::Ride => (None, Some((HighPass, 8000.0, 0.7, 0.08, 1.2, 0.0)), Some(([520.0, 785.0, 1170.0], 0.22, 1.2)), 1.6),
+        Kit::Crash => (None, Some((HighPass, 4000.0, 0.6, 0.55, 1.6, 0.0)), Some(([440.0, 910.0, 1500.0], 0.08, 1.0)), 2.0),
+        Kit::Conga => (Some((340.0, 300.0, 0.02, 0.75, 0.25)), Some((BandPass, 1800.0, 1.0, 0.12, 0.01, 0.0)), None, 0.4),
+        Kit::Clave => (Some((2500.0, 2500.0, 1.0, 0.6, 0.03)), None, None, 0.1),
+        Kit::Tambourine => (None, Some((HighPass, 8500.0, 0.7, 0.5, 0.18, 0.004)), Some(([5200.0, 6900.0, 8100.0], 0.06, 0.15)), 0.35),
+        Kit::Kick808 => (Some((62.0, 46.0, 0.1, 1.0, 1.2)), Some((LowPass, 1200.0, 0.7, 0.25, 0.005, 0.0)), None, 1.5),
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -348,6 +415,32 @@ impl Voice {
                 self.filter = Biquad::new(FilterKind::LowPass, sr, 2600.0, 0.7);
                 self.len = secs(1.3);
             }
+            Sound::Kit(k) => {
+                let (tone, noise, metal, len) = kit_spec(k);
+                if let Some((f0, f1, glide, level, decay)) = tone {
+                    self.freq = f0;
+                    self.freq_end = f1;
+                    self.freq_k = glide_coef(sr, glide);
+                    self.env2 = level * v;
+                    self.env2_k = decay_coef(sr, decay);
+                }
+                if let Some((kind, f, q, level, decay, attack)) = noise {
+                    self.filter = Biquad::new(kind, sr, f, q);
+                    self.partial[1] = level * v;
+                    self.partial_k[1] = decay_coef(sr, decay);
+                    self.attack = (attack * sr) as u32;
+                }
+                if let Some((freqs, level, decay)) = metal {
+                    for i in 0..3 {
+                        self.inc[i] = (freqs[i] / sr).min(0.45);
+                    }
+                    self.partial[0] = level * v;
+                    self.partial_k[0] = decay_coef(sr, decay);
+                    self.filter2 = Biquad::new(FilterKind::HighPass, sr, 4000.0, 0.7);
+                }
+                self.gain = 1.0; // the layers carry their own envelopes
+                self.len = secs(len);
+            }
             Sound::OpenHat => {
                 self.gain = 0.34 * v;
                 self.gain_k = decay_coef(sr, 0.34);
@@ -382,8 +475,11 @@ impl Voice {
         if let Sound::Note(timbre, _) = self.sound {
             return self.next_note(timbre);
         }
+        if let Sound::Kit(_) = self.sound {
+            return self.next_kit();
+        }
         let out = match self.sound {
-            Sound::Note(..) => 0.0,
+            Sound::Note(..) | Sound::Kit(_) => 0.0,
             Sound::Pad(Pad::Kick) | Sound::Pad(Pad::Tom) => {
                 self.freq = self.freq_end + (self.freq - self.freq_end) * self.freq_k;
                 self.phase[0] = (self.phase[0] + self.freq / sr).fract();
@@ -482,6 +578,40 @@ impl Voice {
             Sound::Note(..) if self.active && self.stage != Stage::Release => Some(self.midi),
             _ => None,
         }
+    }
+
+    #[inline]
+    fn next_kit(&mut self) -> f32 {
+        let sr = self.sample_rate;
+        let mut out = 0.0;
+        if self.env2 > 1e-6 {
+            self.freq = self.freq_end + (self.freq - self.freq_end) * self.freq_k;
+            self.phase[3] = (self.phase[3] + self.freq / sr).fract();
+            out += sin_turns(self.phase[3]) * self.env2;
+            self.env2 *= self.env2_k;
+        }
+        if self.partial[1] > 1e-6 {
+            let ramp = if self.attack > 0 && self.t < self.attack { self.t as f32 / self.attack as f32 } else { 1.0 };
+            out += self.filter.process(self.noise.next()) * self.partial[1] * ramp;
+            if ramp >= 1.0 {
+                self.partial[1] *= self.partial_k[1];
+            }
+        }
+        if self.partial[0] > 1e-6 {
+            let mut m = 0.0;
+            for i in 0..3 {
+                self.phase[i] = (self.phase[i] + self.inc[i]).fract();
+                m += square_turns(self.phase[i]);
+            }
+            out += self.filter2.process(m / 3.0) * self.partial[0];
+            self.partial[0] *= self.partial_k[0];
+        }
+        self.t += 1;
+        let quiet = self.env2 <= 1e-6 && self.partial[0] <= 1e-6 && self.partial[1] <= 1e-6;
+        if self.t >= self.len || (self.t > 64 && quiet) {
+            self.active = false;
+        }
+        out
     }
 
     pub fn is_released(&self) -> bool {
@@ -609,6 +739,9 @@ mod tests {
         all.push(Sound::Count(true));
         all.push(Sound::Count(false));
         all.push(Sound::OpenHat);
+        for k in Kit::ALL {
+            all.push(Sound::Kit(k));
+        }
         for s in all {
             let out = render(s);
             assert!(out.len() < 48_000 * 3, "{s:?} never stops");

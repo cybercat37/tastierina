@@ -167,8 +167,12 @@ object AppState {
         private set
 
     // Ritmo
-    /** One bitmask per drum row: bit s is step s. */
-    val pattern = mutableStateListOf<Int>().apply { repeat(DRUM_NAMES.size) { add(0) } }
+    /** One bitmask per drum sound (by engine id): bit s is step s. */
+    val pattern = mutableStateListOf<Int>().apply { repeat(DRUM_SOUNDS.size) { add(0) } }
+    /** Sounds shown as rows, in id order, at most [MAX_ROWS]. */
+    val rows = mutableStateListOf<Int>().apply { addAll(DEFAULT_ROWS) }
+    /** Lessons finished at least once. */
+    val lessonsDone = mutableStateListOf<String>()
     var drumsPlaying by mutableStateOf(false)
         private set
     var drumBpm by mutableIntStateOf(124)
@@ -220,6 +224,10 @@ object AppState {
         p.getString("pattern", null)?.split(',')?.forEachIndexed { i, v ->
             if (i < pattern.size) pattern[i] = v.toIntOrNull() ?: 0
         }
+        p.getString("rows", null)?.split(',')?.mapNotNull { it.toIntOrNull() }
+            ?.filter { it in DRUM_SOUNDS.indices }?.distinct()?.take(MAX_ROWS)
+            ?.takeIf { it.isNotEmpty() }?.let { rows.clear(); rows.addAll(it.sorted()) }
+        p.getString("lessonsDone", "")?.split(',')?.filter { it.isNotBlank() }?.let { lessonsDone.addAll(it) }
         resetMarks()
     }
 
@@ -240,6 +248,8 @@ object AppState {
             ?.putInt("drumBpm", drumBpm)
             ?.putString("lesson", lesson?.id ?: "")
             ?.putString("pattern", pattern.joinToString(","))
+            ?.putString("rows", rows.joinToString(","))
+            ?.putString("lessonsDone", lessonsDone.joinToString(","))
             ?.apply()
     }
 
@@ -660,7 +670,38 @@ object AppState {
         pattern[track] = if (on) pattern[track] or (1 shl step) else pattern[track] and (1 shl step).inv()
         Engine.nativeSetStep(track, step, on)
         if (on && !drumsPlaying) Engine.nativeDrum(track)
+        val st = lessonNow
+        if (st is LessonState.Done && st.lesson.id !in lessonsDone) lessonsDone.add(st.lesson.id)
         save()
+    }
+
+    /** Shows or hides a sound's row. Hiding clears its steps, so nothing plays unseen. */
+    fun toggleRow(id: Int) {
+        if (id !in DRUM_SOUNDS.indices) return
+        if (id in rows) {
+            if (rows.size <= 1) return
+            rows.remove(id)
+            pattern[id] = 0
+            Engine.nativeSetPattern(id, 0)
+        } else {
+            if (rows.size >= MAX_ROWS) return
+            rows.add(id)
+            rows.sort()
+            Engine.nativeDrum(id)
+        }
+        save()
+    }
+
+    /** A lesson brings the rows it needs; other rows go to make room. */
+    private fun showRowsFor(l: Lesson) {
+        val need = l.sounds
+        for (id in need) if (id !in rows) rows.add(id)
+        var i = rows.size - 1
+        while (rows.size > MAX_ROWS && i >= 0) {
+            if (rows[i] !in need) rows.removeAt(i)
+            i--
+        }
+        rows.sort()
     }
 
     fun clearPattern() {
@@ -673,6 +714,7 @@ object AppState {
     fun selectLesson(l: Lesson?) {
         lesson = l
         if (l != null) {
+            showRowsFor(l)
             clearPattern()
             applyDrumBpm(l.bpm)
         }

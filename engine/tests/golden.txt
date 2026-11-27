@@ -6,6 +6,16 @@ tom peak=0.6636 rms=0.1460 crossings=242 length_ms=334.5
 cowbell peak=0.6867 rms=0.1135 crossings=1598 length_ms=296.5
 basso peak=0.6485 rms=0.0595 crossings=370 length_ms=689.6
 accordo peak=0.3903 rms=0.0550 crossings=590 length_ms=911.7
+hat-aperto peak=0.3106 rms=0.0444 crossings=30606 length_ms=293.1
+tom-alto peak=0.6359 rms=0.1380 crossings=397 length_ms=267.2
+rimshot peak=0.7013 rms=0.0965 crossings=23642 length_ms=46.0
+shaker peak=0.5021 rms=0.0848 crossings=15386 length_ms=90.1
+ride peak=0.2266 rms=0.0161 crossings=25173 length_ms=938.5
+crash peak=0.6181 rms=0.0742 crossings=28260 length_ms=1532.2
+conga peak=0.6395 rms=0.1381 crossings=604 length_ms=238.3
+clave peak=0.5335 rms=0.1149 crossings=4980 length_ms=27.7
+tamburello peak=0.4983 rms=0.0667 crossings=30264 length_ms=168.7
+cassa-808 peak=0.7675 rms=0.1728 crossings=94 length_ms=1199.1
 piano peak=0.5931 rms=0.1838 crossings=524 length_ms=1028.2
 organo peak=0.4233 rms=0.2095 crossings=522 length_ms=683.8
 synth peak=0.7449 rms=0.1466 crossings=1189 length_ms=937.7

@@ -4,7 +4,7 @@
 //!
 //!     UPDATE_GOLDEN=1 cargo test -p engine --test golden
 
-use engine::voices::{Pad, Timbre};
+use engine::voices::{Kit, Pad, Timbre};
 use engine::{engine, Command};
 
 const SR: f64 = 48_000.0;
@@ -54,6 +54,11 @@ fn every_pad_still_sounds_the_same() {
         .iter()
         .map(|&p| line(p.name(), &features(Command::Hit { pad: p as u8, velocity: 1.0 }, None)))
         .collect();
+    // The drum machine's own sounds (ids 4 and 7..16; the others are pads).
+    lines.push(line("hat-aperto", &features(Command::Drum { track: 4 }, None)));
+    for (i, k) in Kit::ALL.iter().enumerate() {
+        lines.push(line(k.name(), &features(Command::Drum { track: 7 + i as u8 }, None)));
+    }
     for t in Timbre::ALL {
         let on = Command::NoteOn { midi: 60, timbre: t as u8, velocity: 1.0 };
         lines.push(line(t.name(), &features(on, Some(Command::NoteOff { midi: 60 }))));

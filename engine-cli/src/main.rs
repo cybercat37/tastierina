@@ -63,6 +63,12 @@ fn main() -> std::io::Result<()> {
         write_wav(&path, &samples)?;
         println!("{}", path.display());
     }
+    // Every sound of the drum machine (level 2), by id.
+    for track in 0..engine::DRUM_TRACKS as u8 {
+        let path = dir.join(format!("batteria-{track:02}.wav"));
+        write_wav(&path, &render(&[(0, Command::Drum { track })], 2.0))?;
+        println!("{}", path.display());
+    }
     // A C major scale on each keyboard timbre, a quarter second per note.
     for t in Timbre::ALL {
         let mut cmds = Vec::new();

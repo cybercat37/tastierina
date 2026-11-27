@@ -17,12 +17,13 @@ use std::sync::Arc;
 
 use dsp::soft_clip;
 use timing::BeatGrid;
-use voices::{Pad, Sound, Timbre, Voice};
+use voices::{Kit, Pad, Sound, Timbre, Voice};
 
 pub const MAX_VOICES: usize = 24;
 pub const QUEUE_LEN: usize = 256;
-/// Rows of the drum machine (level 2): cassa, rullante, clap, hat chiuso, hat aperto.
-pub const DRUM_TRACKS: usize = 5;
+/// Sounds of the drum machine (level 2). Ids: 0 cassa, 1 rullante, 2 clap,
+/// 3 hat chiuso, 4 hat aperto, 5 tom basso, 6 cowbell, then `Kit::ALL` from 7.
+pub const DRUM_TRACKS: usize = 16;
 /// Steps of a drum pattern: sixteenths of one 4/4 bar.
 pub const DRUM_STEPS: i64 = 16;
 
@@ -34,7 +35,9 @@ pub fn drum_sound(track: u8) -> Option<Sound> {
         2 => Some(Sound::Pad(Pad::Clap)),
         3 => Some(Sound::Pad(Pad::Hat)),
         4 => Some(Sound::OpenHat),
-        _ => None,
+        5 => Some(Sound::Pad(Pad::Tom)),
+        6 => Some(Sound::Pad(Pad::Cowbell)),
+        n => Kit::ALL.get(n as usize - 7).map(|&k| Sound::Kit(k)),
     }
 }
 
