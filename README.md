@@ -10,7 +10,7 @@ interfaccia in Kotlin e Jetpack Compose.
 | 0.5 Ripeti | L'app suona una frase, conta 4-3-2-1, tu la ripeti a tempo quante volte vuoi | sì |
 | 1. Tastierina | Tastiera a 18 tasti, 9 strumenti, 21 canzoni guidate, modi Impara e A tempo con stelle | sì |
 | 2. Ritmo | Batteria a 16 passi con 16 suoni (la griglia scorre) e 14 lezioni di genere | sì |
-| 3. Groove | Basso, melodia, registrazione dalla tastiera | in arrivo |
+| 3. Groove | Righe di basso e melodia, registrazione dai tasti, filtro del basso, lezioni con il basso | sì |
 | 4. Groovebox | Giri A/B/C, 1-2-4 battute, scaletta | in arrivo |
 
 La versione web con tutti i livelli è in `web/index.html` e fa da specifica

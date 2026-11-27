@@ -15,6 +15,7 @@ enum class Level(val number: String, val title: String) {
     RIPETI("0.5", "Ripeti"),
     TASTI("1", "Tastierina"),
     RITMO("2", "Ritmo"),
+    GROOVE("3", "Groove"),
 }
 
 enum class PlayMode(val title: String) { IMPARA("Impara"), A_TEMPO("A tempo") }
@@ -122,9 +123,9 @@ object AppState {
 
     // Tastierina
     /** Same order as engine::voices::Timbre. */
-    val timbreNames = listOf("Piano", "Piano el.", "Organo", "Archi", "Flauto", "Chitarra", "Marimba", "Synth", "Campana")
+    val timbreNames = listOf("Piano", "Piano el.", "Organo", "Archi", "Flauto", "Chitarra", "Marimba", "Synth", "Campana", "Basso", "Lead")
     /** Engine index of each name above. */
-    val timbreIds = listOf(0, 8, 1, 4, 5, 6, 7, 2, 3)
+    val timbreIds = listOf(0, 8, 1, 4, 5, 6, 7, 2, 3, 9, 10)
     var timbre by mutableIntStateOf(0)
         private set
     var octave by mutableIntStateOf(0)
@@ -179,7 +180,46 @@ object AppState {
         private set
     var lesson by mutableStateOf<Lesson?>(LESSONS.first())
         private set
-    val lessonNow: LessonState? get() = lesson?.let { lessonState(it, pattern) }
+    val lessonNow: LessonState?
+        get() = lesson?.let { lessonState(it, pattern, if (level == Level.GROOVE) bassNotes else null) }
+
+    // Groove: two note rows on the same sixteen steps. Engine rows: 0 bass, 1 melody.
+    val bassNotes = mutableStateListOf<Int>().apply { repeat(DRUM_STEPS) { add(-1) } }
+    val leadNotes = mutableStateListOf<Int>().apply { repeat(DRUM_STEPS) { add(-1) } }
+    val rowNames = listOf("Basso", "Melodia")
+    private val rowBase = intArrayOf(36, 60)
+    private val rowTimbre = intArrayOf(9, 10)
+    /** false: the drum grid; true: the note rows with the keys. */
+    var noteView by mutableStateOf(false)
+        private set
+    /** The row the keys play and write to. */
+    var recTarget by mutableIntStateOf(0)
+        private set
+    var recArmed by mutableStateOf(false)
+        private set
+    /** Bass filter, 0 dark to 10 bright. */
+    var bassCut by mutableIntStateOf(5)
+        private set
+    /** The last key played: the note a tapped cell takes. */
+    var chosenKey by mutableIntStateOf(-1)
+        private set
+    /** A one-off message for the display, until the next touch. */
+    var grooveHint by mutableStateOf("")
+        private set
+    /** MIDI note each held key started, so it is the one released. */
+    private val heldMidi = IntArray(KEY_COUNT)
+
+    fun notesOf(row: Int) = if (row == 0) bassNotes else leadNotes
+    fun noteAt(row: Int, step: Int) = notesOf(row)[step]
+
+    /** The key the bass lesson is waiting for you to choose, or -1. */
+    val bassNeed: Int
+        get() {
+            val st = lessonNow as? LessonState.Bass ?: return -1
+            if (!noteView || recArmed || recTarget != 0 || st.extra.isNotEmpty() || st.missing.isEmpty()) return -1
+            val w = st.want[st.missing.min()] ?: return -1
+            return if (chosenKey >= 0 && chosenKey % 12 == w % 12) -1 else w
+        }
     /** Step under the playhead, or -1. */
     val drumStep: Int
         get() {
@@ -230,6 +270,13 @@ object AppState {
         rows.clear()
         rows.addAll((savedRows ?: DRUM_SOUNDS.indices.toList()).sorted())
         p.getString("lessonsDone", "")?.split(',')?.filter { it.isNotBlank() }?.let { lessonsDone.addAll(it) }
+        for ((key, list) in listOf("bassNotes" to bassNotes, "leadNotes" to leadNotes)) {
+            p.getString(key, null)?.split(',')?.forEachIndexed { i, v ->
+                if (i < list.size) list[i] = (v.toIntOrNull() ?: -1).coerceIn(-1, KEY_COUNT - 1)
+            }
+        }
+        bassCut = p.getInt("bassCut", 5).coerceIn(0, 10)
+        recTarget = p.getInt("recTarget", 0).coerceIn(0, 1)
         resetMarks()
     }
 
@@ -252,6 +299,10 @@ object AppState {
             ?.putString("pattern", pattern.joinToString(","))
             ?.putString("rows2", rows.joinToString(","))
             ?.putString("lessonsDone", lessonsDone.joinToString(","))
+            ?.putString("bassNotes", bassNotes.joinToString(","))
+            ?.putString("leadNotes", leadNotes.joinToString(","))
+            ?.putInt("bassCut", bassCut)
+            ?.putInt("recTarget", recTarget)
             ?.apply()
     }
 
@@ -267,6 +318,7 @@ object AppState {
     fun stopAudio() {
         // A new stream starts clean: nothing held, nothing playing by itself.
         takeRunning = false
+        recArmed = false
         drumsPlaying = false
         demoStarts = null
         demoKey = -1
@@ -308,10 +360,13 @@ object AppState {
         if (l == level) return
         if (level == Level.RIPETI) stopRipeti()
         if (level == Level.TASTI) leaveKeyboard()
-        if (level == Level.RITMO) stopDrums()
+        if (level == Level.RITMO || level == Level.GROOVE) stopDrums()
+        if (level == Level.GROOVE) releaseAllKeys()
         if (tempo) setTempoMode(false)
         level = l
         if (l == Level.RIPETI) startRipeti()
+        // The note rows only sound from level 3: send the engine what this level plays.
+        if (l == Level.RITMO || l == Level.GROOVE) pushPattern()
         save()
     }
 
@@ -431,20 +486,35 @@ object AppState {
     fun keyDown(key: Int, touchNanos: Long = System.nanoTime()) {
         if (key !in 0 until KEY_COUNT) return
         held[key] = held[key] + 1
-        if (held[key] == 1) {
-            Engine.nativeNoteOn(midiOf(key), timbre, 0.9f)
-            when {
-                takeRunning -> takeHit(key, touchNanos)
-                playMode == PlayMode.IMPARA -> followSong(key)
-                else -> {} // A tempo, before Via!: free playing
+        if (held[key] != 1) return
+        if (level == Level.GROOVE) {
+            // The keys sound like the row they write to, and choose the note for its cells.
+            heldMidi[key] = rowBase[recTarget] + key
+            Engine.nativeNoteOn(heldMidi[key], rowTimbre[recTarget], 0.9f)
+            chosenKey = key
+            grooveHint = ""
+            if (recArmed && drumsPlaying) {
+                val step = Engine.nativeRecord(recTarget, key, touchNanos)
+                if (step in 0 until DRUM_STEPS) {
+                    notesOf(recTarget)[step] = key
+                    afterEdit()
+                }
             }
+            return
+        }
+        heldMidi[key] = midiOf(key)
+        Engine.nativeNoteOn(heldMidi[key], timbre, 0.9f)
+        when {
+            takeRunning -> takeHit(key, touchNanos)
+            playMode == PlayMode.IMPARA -> followSong(key)
+            else -> {} // A tempo, before Via!: free playing
         }
     }
 
     fun keyUp(key: Int) {
         if (key !in 0 until KEY_COUNT || held[key] == 0) return
         held[key] = held[key] - 1
-        if (held[key] == 0) Engine.nativeNoteOff(midiOf(key))
+        if (held[key] == 0) Engine.nativeNoteOff(heldMidi[key])
     }
 
     private fun releaseAllKeys() {
@@ -664,6 +734,78 @@ object AppState {
 
     private fun pushPattern() {
         pattern.forEachIndexed { t, row -> Engine.nativeSetPattern(t, row) }
+        val notes = level == Level.GROOVE
+        for (row in 0..1) for (step in 0 until DRUM_STEPS) {
+            Engine.nativeSetNote(row, step, if (notes) noteAt(row, step) else -1)
+        }
+        Engine.nativeBassFilter(bassCut / 10f)
+    }
+
+    /** After any change to the giro: lesson progress, the view the lesson needs, saving. */
+    private fun afterEdit() {
+        forgetCleared()
+        val st = lessonNow
+        if (st is LessonState.Done && st.lesson.id !in lessonsDone) lessonsDone.add(st.lesson.id)
+        if (level == Level.GROOVE && st is LessonState.Bass && !noteView) noteView = true
+        save()
+    }
+
+    // ---- Groove --------------------------------------------------------------
+
+    fun showNotes(on: Boolean) {
+        if (!on) releaseAllKeys()
+        noteView = on
+    }
+
+    fun selectTarget(row: Int) {
+        if (row !in 0..1 || row == recTarget) return
+        releaseAllKeys()
+        recTarget = row
+        save()
+    }
+
+    /** Recording starts the giro if it is still: notes played on the keys land on the nearest step. */
+    fun toggleRec() {
+        if (recArmed) {
+            recArmed = false
+        } else {
+            if (!drumsPlaying) playDrums()
+            recArmed = drumsPlaying
+        }
+    }
+
+    fun changeBassCut(delta: Int) {
+        bassCut = (bassCut + delta).coerceIn(0, 10)
+        Engine.nativeBassFilter(bassCut / 10f)
+        save()
+    }
+
+    /**
+     * Turns a note cell on (with the chosen key) or off. In the bass lesson a
+     * green cell only takes its own note. Returns whether anything changed.
+     */
+    fun setNote(row: Int, step: Int, on: Boolean): Boolean {
+        if (row !in 0..1 || step !in 0 until DRUM_STEPS) return false
+        val list = notesOf(row)
+        if (on == (list[step] >= 0)) return false
+        if (on) {
+            val key = if (chosenKey >= 0) chosenKey else 9
+            val st = lessonNow
+            if (row == 0 && st is LessonState.Bass) {
+                val w = st.want[step]
+                if (w != null && key % 12 != w % 12) {
+                    grooveHint = "prima suona ${keyName(w)} sui tasti, poi tocca la casella"
+                    return false
+                }
+            }
+            list[step] = key
+        } else {
+            list[step] = -1
+        }
+        grooveHint = ""
+        Engine.nativeSetNote(row, step, list[step])
+        afterEdit()
+        return true
     }
 
     fun isOn(track: Int, step: Int) = pattern[track] and (1 shl step) != 0
@@ -674,9 +816,7 @@ object AppState {
         pattern[track] = if (on) pattern[track] or (1 shl step) else pattern[track] and (1 shl step).inv()
         Engine.nativeSetStep(track, step, on)
         if (on && !drumsPlaying) Engine.nativeDrum(track)
-        val st = lessonNow
-        if (st is LessonState.Done && st.lesson.id !in lessonsDone) lessonsDone.add(st.lesson.id)
-        save()
+        afterEdit()
     }
 
     /** Shows or hides a sound's row. Hiding clears its steps, so nothing plays unseen. */
@@ -731,14 +871,23 @@ object AppState {
         rows.sort()
     }
 
+    private fun notesEmpty() = bassNotes.all { it < 0 } && leadNotes.all { it < 0 }
+
+    /** Empties the giro: the drums, and from level 3 the note rows too. */
     fun clearPattern() {
         for (i in pattern.indices) pattern[i] = 0
+        if (level == Level.GROOVE) {
+            for (i in 0 until DRUM_STEPS) {
+                bassNotes[i] = -1
+                leadNotes[i] = -1
+            }
+        }
         pushPattern()
         save()
     }
 
     /** What "Svuota" removed, until the next change: "Annulla" brings it back. */
-    private var cleared: List<Int>? = null
+    private var cleared: Triple<List<Int>, List<Int>, List<Int>>? = null
     var canUndoClear by mutableStateOf(false)
         private set
 
@@ -748,15 +897,19 @@ object AppState {
     }
 
     fun clearByUser() {
-        if (pattern.all { it == 0 }) return
-        cleared = pattern.toList()
+        if (pattern.all { it == 0 } && (level != Level.GROOVE || notesEmpty())) return
+        cleared = Triple(pattern.toList(), bassNotes.toList(), leadNotes.toList())
         canUndoClear = true
         clearPattern()
     }
 
     fun undoClear() {
         val before = cleared ?: return
-        for (i in pattern.indices) pattern[i] = before.getOrElse(i) { 0 }
+        for (i in pattern.indices) pattern[i] = before.first.getOrElse(i) { 0 }
+        for (i in 0 until DRUM_STEPS) {
+            bassNotes[i] = before.second.getOrElse(i) { -1 }
+            leadNotes[i] = before.third.getOrElse(i) { -1 }
+        }
         forgetCleared()
         pushPattern()
         save()
@@ -770,7 +923,9 @@ object AppState {
     fun selectLesson(l: Lesson?) {
         lesson = l
         forgetCleared()
+        grooveHint = ""
         if (l != null) {
+            noteView = false
             showRowsFor(l)
             clearPattern()
             applyDrumBpm(l.bpm)
@@ -791,6 +946,7 @@ object AppState {
     fun stopDrums() {
         if (!drumsPlaying) return
         drumsPlaying = false
+        recArmed = false
         Engine.nativeSequencer(false)
         Engine.nativeSetMetronome(false, drumBpm.toFloat())
         Engine.nativeSetClick(true)

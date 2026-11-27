@@ -397,3 +397,36 @@ pub extern "system" fn Java_it_tastierina_app_Engine_nativeDrum(_env: JEnv, _thi
         o.control.send(Command::Drum { track: track.clamp(0, 255) as u8 });
     })
 }
+
+// ---- Note rows (level 3): 0 bass, 1 melody ------------------------------------
+
+/// Puts `key` (0..18, -1 for silence) on a step of a note row.
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeSetNote(_env: JEnv, _this: JObj, row: i32, step: i32, key: i32) {
+    with_output((), |o| {
+        o.control.send(Command::SetNote { row: row.clamp(0, 255) as u8, step: step.clamp(0, 255) as u8, key: key.clamp(-1, 17) as i8 });
+    })
+}
+
+/// Records a key played at `touch_nanos` on the step nearest to what the player
+/// was hearing. Returns that step (0..16), or -1 when the metronome is off.
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeRecord(_env: JEnv, _this: JObj, row: i32, key: i32, touch_nanos: i64) -> i32 {
+    with_output(-1, |o| match o.control.shared.grid() {
+        Some(grid) => {
+            let frame = heard_frame(o.presentation(touch_nanos), touch_nanos, o.sample_rate);
+            let abs_step = (grid.position(frame) * 4.0).round() as i64;
+            o.control.send(Command::RecordNote { row: row.clamp(0, 255) as u8, abs_step, key: key.clamp(-1, 17) as i8 });
+            abs_step.rem_euclid(engine::DRUM_STEPS) as i32
+        }
+        None => -1,
+    })
+}
+
+/// Bass filter, 0 dark to 1 bright.
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeBassFilter(_env: JEnv, _this: JObj, setting: f32) {
+    with_output((), |o| {
+        o.control.send(Command::BassFilter(setting));
+    })
+}

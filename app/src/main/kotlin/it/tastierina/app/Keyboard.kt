@@ -91,7 +91,7 @@ fun TastiScreen(modifier: Modifier) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         TastiControls(Modifier.fillMaxWidth().height(44.dp))
         SongStrip(Modifier.fillMaxWidth().height(40.dp))
-        Keyboard(Modifier.fillMaxWidth().weight(1f))
+        SongKeyboard(Modifier.fillMaxWidth().weight(1f))
     }
 }
 
@@ -240,15 +240,26 @@ private fun SongStrip(modifier: Modifier) {
     }
 }
 
+/** The keys with the song's guide: the key to press now and the one after. */
 @Composable
-private fun Keyboard(modifier: Modifier) {
+private fun SongKeyboard(modifier: Modifier) {
     val s = AppState
-    val view = LocalView.current
-    val fingers = remember { HashMap<PointerId, Int>() }
     val sg = s.song
     val demo = s.demoStarts != null
     val next = if (sg != null && !s.songDone) sg.notes[s.songStep].key else -1
     val after = if (sg != null && !demo && !s.takeRunning && s.songStep + 1 < sg.notes.size) sg.notes[s.songStep + 1].key.takeIf { it != next } ?: -1 else -1
+    Keyboard(modifier, next, after, middleC = -12 * s.octave)
+}
+
+/**
+ * The 18 keys. [next] gets a filled guide dot and [after] a ring (-1 for none);
+ * [middleC] is the key marked as the piano's middle C, if it is on the keys.
+ */
+@Composable
+internal fun Keyboard(modifier: Modifier, next: Int, after: Int, middleC: Int) {
+    val s = AppState
+    val view = LocalView.current
+    val fingers = remember { HashMap<PointerId, Int>() }
 
     BoxWithConstraints(
         modifier
@@ -298,7 +309,7 @@ private fun Keyboard(modifier: Modifier) {
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         GuideDot(k == next, k == after, KGuide, 22)
-                        if (k == -12 * s.octave) {
+                        if (k == middleC) {
                             // middle C (MIDI 60)
                             Box(Modifier.size(6.dp).clip(CircleShape).background(KAccent))
                         }

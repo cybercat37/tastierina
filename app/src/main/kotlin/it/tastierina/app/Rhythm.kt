@@ -39,6 +39,26 @@ data class Lesson(
 
 val LESSON_GROUPS = listOf("Elettronica", "Groove", "Latino")
 
+/** The bass line of each lesson, from level 3: step to key of the keyboard (0 = Do). */
+private val LESSON_BASS: Map<String, Map<Int, Int>> = mapOf(
+    "house" to mapOf(2 to 9, 6 to 9, 10 to 9, 14 to 7),
+    "techno" to mapOf(2 to 5, 3 to 5, 6 to 5, 7 to 5, 10 to 5, 11 to 5, 14 to 5, 15 to 5),
+    "dnb" to mapOf(0 to 4, 3 to 4, 10 to 7, 13 to 9),
+    "garage" to mapOf(0 to 9, 3 to 9, 10 to 7, 13 to 4),
+    "dubstep" to mapOf(0 to 4, 8 to 4, 11 to 7),
+    "trap" to mapOf(0 to 5, 3 to 5, 11 to 4),
+    "afro" to mapOf(0 to 9, 3 to 9, 8 to 7, 11 to 7),
+    "disco" to mapOf(0 to 4, 2 to 16, 4 to 4, 6 to 16, 8 to 4, 10 to 16, 12 to 4, 14 to 16),
+    "funk" to mapOf(0 to 2, 3 to 2, 6 to 5, 10 to 2, 12 to 0),
+    "hiphop" to mapOf(0 to 0, 7 to 0, 10 to 7),
+    "rock" to mapOf(0 to 4, 4 to 4, 8 to 9, 12 to 9),
+    "breakbeat" to mapOf(0 to 2, 6 to 2, 10 to 5),
+    "reggaeton" to mapOf(0 to 9, 6 to 4, 8 to 9, 14 to 4),
+    "clave" to mapOf(0 to 0, 6 to 7, 8 to 0, 14 to 7),
+)
+
+val Lesson.bass: Map<Int, Int> get() = LESSON_BASS[id] ?: emptyMap()
+
 private val EVERY = (0 until DRUM_STEPS).toSet()
 private fun every(n: Int, from: Int = 0) = (from until DRUM_STEPS step n).toSet()
 private val FOUR = every(4)
@@ -179,18 +199,44 @@ sealed interface LessonState {
         val extra: Set<Int>,
     ) : LessonState
 
+    /** The last stage, from level 3: the bass line. Either octave of a wanted note is right. */
+    data class Bass(
+        val index: Int,
+        val total: Int,
+        val want: Map<Int, Int>,
+        val missing: Set<Int>,
+        val extra: Set<Int>,
+    ) : LessonState
+
     data class Done(val lesson: Lesson) : LessonState
 }
 
-fun lessonState(lesson: Lesson, pattern: List<Int>): LessonState {
+/** [bassNotes] is the bass row (a key per step, -1 silent), or null where the bass is not part of the lesson. */
+fun lessonState(lesson: Lesson, pattern: List<Int>, bassNotes: List<Int>? = null): LessonState {
+    val withBass = bassNotes != null && lesson.bass.isNotEmpty()
+    val total = lesson.stages.size + if (withBass) 1 else 0
     lesson.stages.forEachIndexed { i, st ->
         val row = pattern.getOrElse(st.track) { 0 }
         val on = (0 until DRUM_STEPS).filter { row and (1 shl it) != 0 }.toSet()
         val missing = st.steps - on
         val extra = on - st.steps
         if (missing.isNotEmpty() || extra.isNotEmpty()) {
-            return LessonState.Working(i, lesson.stages.size, st, missing, extra)
+            return LessonState.Working(i, total, st, missing, extra)
         }
+    }
+    if (withBass && bassNotes != null) {
+        val want = lesson.bass
+        val missing = HashSet<Int>()
+        val extra = HashSet<Int>()
+        for (step in 0 until DRUM_STEPS) {
+            val w = want[step]
+            val n = bassNotes.getOrElse(step) { -1 }
+            when {
+                n < 0 && w != null -> missing += step
+                n >= 0 && (w == null || n % 12 != w % 12) -> extra += step
+            }
+        }
+        if (missing.isNotEmpty() || extra.isNotEmpty()) return LessonState.Bass(total - 1, total, want, missing, extra)
     }
     return LessonState.Done(lesson)
 }

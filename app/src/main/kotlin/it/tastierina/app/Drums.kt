@@ -73,7 +73,7 @@ fun RitmoScreen(modifier: Modifier) {
 }
 
 @Composable
-private fun DChip(text: String, selected: Boolean, label: String, onClick: () -> Unit) {
+internal fun DChip(text: String, selected: Boolean, label: String, onClick: () -> Unit) {
     val shape = RoundedCornerShape(22.dp)
     Box(
         Modifier.height(44.dp).clip(shape)
@@ -130,7 +130,7 @@ private fun rowPixels(height: Int, rows: Int, minRow: Int, gap: Int): Int =
  * drag scrolls the rows. A tap on a row's name plays its sound.
  */
 @Composable
-private fun DrumGrid(modifier: Modifier) {
+internal fun DrumGrid(modifier: Modifier) {
     val s = AppState
     val view = LocalView.current
     val density = LocalDensity.current
@@ -302,16 +302,41 @@ private fun Cell(
     }
 }
 
-/** The text for the display at level 2. */
+/** The text for the display at levels 2 and 3. */
 fun ritmoLcd(): String {
     val s = AppState
+    val groove = s.level == Level.GROOVE
+    if (groove && s.grooveHint.isNotEmpty()) return s.grooveHint
     return when (val st = s.lessonNow) {
-        null -> if (s.drumsPlaying) "accendi e spegni mentre suona" else "accendi le caselle e premi Suona"
+        null -> when {
+            s.recArmed -> "REC ${s.rowNames[s.recTarget].uppercase()} · suona i tasti a tempo"
+            groove && s.noteView && s.chosenKey < 0 -> "suona un tasto per scegliere la nota, poi tocca le caselle"
+            groove && s.noteView -> "nota scelta: ${keyName(s.chosenKey)} · tocca le caselle"
+            s.drumsPlaying -> "accendi e spegni mentre suona"
+            else -> "accendi le caselle e premi Suona"
+        }
         is LessonState.Done -> if (s.drumsPlaying) "BRAVO! questo è un giro ${st.lesson.style}" else "giro ${st.lesson.style} pronto: premi Suona"
         is LessonState.Working -> {
             val name = DRUM_SOUNDS[st.stage.track].uppercase()
-            val tip = if (st.missing.isEmpty()) "spegni le caselle col cerchietto" else st.stage.tip
+            val tip = when {
+                groove && s.noteView -> "torna alla vista Batteria"
+                st.missing.isEmpty() -> "spegni le caselle col cerchietto"
+                else -> st.stage.tip
+            }
             "${st.index + 1}/${st.total} $name · $tip"
+        }
+        is LessonState.Bass -> {
+            val wanted = st.missing.minOrNull()?.let { st.want[it] }
+            val tip = when {
+                !s.noteView -> "passa alla vista Note"
+                st.extra.isNotEmpty() -> "spegni le caselle col cerchietto"
+                s.recTarget != 0 -> "scegli la riga Basso"
+                s.recArmed -> "suona le note a tempo sulle caselle verdi"
+                wanted == null -> "spegni le caselle col cerchietto"
+                s.chosenKey < 0 || s.chosenKey % 12 != wanted % 12 -> "scegli la nota: suona ${keyName(wanted)} sui tasti"
+                else -> "ora tocca le caselle con scritto ${keyName(wanted)}"
+            }
+            "${st.index + 1}/${st.total} BASSO · $tip"
         }
     }
 }
@@ -342,7 +367,7 @@ private fun LightChip(text: String, selected: Boolean, enabled: Boolean = true, 
 /** The patterns to follow, by family; ✓ marks the ones finished once. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun LessonsDialog(onClose: () -> Unit) {
+internal fun LessonsDialog(onClose: () -> Unit) {
     val s = AppState
     val pick = { l: Lesson? ->
         s.selectLesson(l)
@@ -366,7 +391,7 @@ private fun LessonsDialog(onClose: () -> Unit) {
 /** Which sounds are rows of the grid: all of them, the basic five, or a choice. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun SoundsDialog(onClose: () -> Unit) {
+internal fun SoundsDialog(onClose: () -> Unit) {
     val s = AppState
     Sheet(onClose, 760.dp, "Suoni della griglia") {
         Text(

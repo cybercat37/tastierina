@@ -64,10 +64,14 @@ pub enum Timbre {
     Guitar = 6,
     Marimba = 7,
     ElectricPiano = 8,
+    /// The bass row of the sequencer (level 3): saw and square under a resonant low-pass.
+    Bass = 9,
+    /// The melody row of the sequencer: a bright square lead.
+    Lead = 10,
 }
 
 impl Timbre {
-    pub const ALL: [Timbre; 9] = [
+    pub const ALL: [Timbre; 11] = [
         Timbre::Piano,
         Timbre::Organ,
         Timbre::Synth,
@@ -77,6 +81,8 @@ impl Timbre {
         Timbre::Guitar,
         Timbre::Marimba,
         Timbre::ElectricPiano,
+        Timbre::Bass,
+        Timbre::Lead,
     ];
 
     pub fn from_index(i: u8) -> Timbre {
@@ -94,6 +100,8 @@ impl Timbre {
             Timbre::Guitar => "chitarra",
             Timbre::Marimba => "marimba",
             Timbre::ElectricPiano => "piano-elettrico",
+            Timbre::Bass => "basso-synth",
+            Timbre::Lead => "lead",
         }
     }
 }
@@ -302,6 +310,8 @@ impl Voice {
                     Timbre::Guitar => (0.002, 0.60, 1.4, 0.0, 0.2),
                     Timbre::Marimba => (0.001, 0.60, 0.45, 0.0, 0.15),
                     Timbre::ElectricPiano => (0.003, 0.50, 1.4, 0.0, 0.25),
+                    Timbre::Bass => (0.004, 0.45, 0.25, 0.36, 0.035),
+                    Timbre::Lead => (0.005, 0.42, 0.14, 0.24, 0.07),
                 };
                 self.attack = ((a * sr) as u32).max(1);
                 self.peak = peak * v;
@@ -324,6 +334,8 @@ impl Voice {
                     Timbre::Marimba => [(1.0, 1.0, 0.4, 0.0), (4.0, 0.35, 0.05, 0.0), (9.9, 0.1, 0.02, 0.0), (0.0, 0.0, 0.0, 0.0)],
                     // FM: partial 1 modulates partial 0, its level is the index; partial 2 is the tine.
                     Timbre::ElectricPiano => [(1.0, 1.0, 0.0, 1.0), (1.0, 1.4, 0.35, 0.25), (14.0, 0.06, 0.02, 0.0), (0.0, 0.0, 0.0, 0.0)],
+                    Timbre::Bass => [(1.0, 0.7, 0.0, 0.7), (1.004, 0.35, 0.0, 0.35), (0.0, 0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 0.0)],
+                    Timbre::Lead => [(1.0, 0.5, 0.0, 0.5), (1.0052, 0.35, 0.0, 0.35), (2.0, 0.15, 0.0, 0.15), (0.0, 0.0, 0.0, 0.0)],
                 };
                 for (i, (ratio, level, tc, floor)) in partials.into_iter().enumerate() {
                     self.inc[i] = (f * ratio / sr).min(0.45);
@@ -336,6 +348,8 @@ impl Voice {
                     Timbre::Synth => Some((7.0, 2.2, 0.22, 5.0)),
                     Timbre::Guitar => Some((12.0, 3.0, 0.25, 0.9)),
                     Timbre::Strings => Some((5.0, 4.0, 0.5, 0.7)),
+                    Timbre::Bass => Some((8.0, 2.0, 0.08, 4.0)),
+                    Timbre::Lead => Some((8.0, 3.0, 0.1, 2.0)),
                     _ => None,
                 };
                 if let Some((from, to, tc, q)) = sweep {
@@ -614,6 +628,23 @@ impl Voice {
         out
     }
 
+    /// The timbre of the keyboard note this voice plays, if it plays one.
+    pub fn note_timbre(&self) -> Option<Timbre> {
+        match self.sound {
+            Sound::Note(t, _) if self.active => Some(t),
+            _ => None,
+        }
+    }
+
+    /// Replaces the note's filter sweep: from `from` Hz down to `to` Hz. For timbres with a filter.
+    pub fn set_sweep(&mut self, from: f32, to: f32, tau: f32, q: f32) {
+        self.freq = from;
+        self.freq_end = to;
+        self.freq_k = glide_coef(self.sample_rate, tau);
+        self.env2 = q;
+        self.filter = Biquad::new(FilterKind::LowPass, self.sample_rate, from, q);
+    }
+
     pub fn is_released(&self) -> bool {
         self.stage == Stage::Release
     }
@@ -652,7 +683,8 @@ impl Voice {
                 (Timbre::Piano, 0) | (Timbre::Guitar, 0) => triangle_turns(p),
                 (Timbre::Synth, 0) | (Timbre::Synth, 1) => saw_turns(p),
                 (Timbre::Synth, _) => square_turns(p),
-                (Timbre::Strings, _) => saw_turns(p),
+                (Timbre::Strings, _) | (Timbre::Bass, 0) | (Timbre::Lead, 1) => saw_turns(p),
+                (Timbre::Bass, _) | (Timbre::Lead, _) => square_turns(p),
                 (Timbre::Flute, 3) => self.noise.next(),
                 // The modulator is heard only through the carrier; its level (the index) still decays.
                 (Timbre::ElectricPiano, 1) => 0.0,
@@ -662,7 +694,7 @@ impl Voice {
             s += wave * self.partial[i];
             self.partial[i] = self.partial_floor[i] + (self.partial[i] - self.partial_floor[i]) * self.partial_k[i];
         }
-        if matches!(timbre, Timbre::Synth | Timbre::Guitar | Timbre::Strings) {
+        if matches!(timbre, Timbre::Synth | Timbre::Guitar | Timbre::Strings | Timbre::Bass | Timbre::Lead) {
             if self.t % 32 == 0 {
                 self.freq = self.freq_end + (self.freq - self.freq_end) * self.freq_k.powi(32);
                 self.filter.set(FilterKind::LowPass, self.sample_rate, self.freq, self.env2);

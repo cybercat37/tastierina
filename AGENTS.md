@@ -9,7 +9,8 @@ time, as a native Android app.
 
 - `engine/`: the audio engine, pure Rust with no dependencies. Voices,
   held keyboard notes in nine timbres, metronome, scheduled pads and
-  notes, a 16-step drum machine, timing judge, SPSC command queue, and
+  notes, a 16-step drum machine with bass and melody rows and live
+  recording, timing judge, SPSC command queue, and
   `repeat` (level 0.5: phrase generation and evaluation), `perform`
   (level 1 "A tempo": a song judged note by note, stars). Renders without allocating,
   locking or blocking.
@@ -19,7 +20,7 @@ time, as a native Android app.
 - `app/`: Kotlin and Jetpack Compose. `Engine.kt` (JNI surface),
   `AppState.kt` (all state, the only caller of `Engine`), `Ui.kt` (levels
   0 and 0.5, shared chrome), `Keyboard.kt` and `Songs.kt` (level 1), `Drums.kt` and
-  `Rhythm.kt` (level 2).
+  `Rhythm.kt` (level 2), `Groove.kt` (level 3: note rows and recording).
 - `web/index.html`: the earlier web version with all five levels. It is the
   behavioural spec for the levels still to port.
 

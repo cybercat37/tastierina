@@ -25,3 +25,5 @@ flauto peak=0.3892 rms=0.1693 crossings=526 length_ms=1204.9
 chitarra peak=0.7880 rms=0.1690 crossings=798 length_ms=1460.3
 marimba peak=0.6730 rms=0.1380 crossings=531 length_ms=939.4
 piano-elettrico peak=0.4790 rms=0.1347 crossings=551 length_ms=1965.4
+basso-synth peak=0.7557 rms=0.2381 crossings=1340 length_ms=730.8
+lead peak=0.4340 rms=0.1400 crossings=756 length_ms=902.7

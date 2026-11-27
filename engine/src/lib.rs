@@ -41,6 +41,19 @@ pub fn drum_sound(track: u8) -> Option<Sound> {
     }
 }
 
+/// Note rows of the sequencer (level 3): 0 is the bass, 1 the melody.
+pub const NOTE_ROWS: usize = 2;
+/// MIDI note of key 0 on each note row.
+pub const ROW_BASE: [u8; NOTE_ROWS] = [36, 60];
+pub const ROW_TIMBRE: [Timbre; NOTE_ROWS] = [Timbre::Bass, Timbre::Lead];
+/// How much of its step a note row's note is held.
+const ROW_GATE: [f64; NOTE_ROWS] = [0.55, 0.8];
+
+/// Cutoff of the bass filter for a setting 0..1: 120 Hz closed, 7.7 kHz open.
+pub fn bass_cutoff(setting: f32) -> f32 {
+    120.0 * 2f32.powf(setting.clamp(0.0, 1.0) * 6.0)
+}
+
 /// Events waiting for a future beat: enough for a whole song's notes and releases.
 pub const MAX_SCHEDULED: usize = 160;
 
@@ -51,6 +64,8 @@ enum Event {
     Count(bool),
     NoteOn(u8, Timbre),
     NoteOff(u8),
+    /// End of a sequencer note: releases only that row's voice.
+    SeqOff(u8, Timbre),
 }
 pub const BPM_MIN: f32 = 50.0;
 pub const BPM_MAX: f32 = 180.0;
@@ -86,6 +101,13 @@ pub enum Command {
     Sequencer(bool),
     /// Play one drum row's sound now (to hear a step when it is turned on).
     Drum { track: u8 },
+    /// Put a key (0..18, or -1 for silence) on a step of a note row.
+    SetNote { row: u8, step: u8, key: i8 },
+    /// A key played live while recording: `abs_step` counts sixteenths from beat 0.
+    /// If that step has not sounded yet it is skipped once, since the player just played it.
+    RecordNote { row: u8, abs_step: i64, key: i8 },
+    /// Bass filter, 0 (dark) to 1 (bright).
+    BassFilter(f32),
     /// Forget everything scheduled.
     ClearScheduled,
 }
@@ -158,6 +180,9 @@ pub struct Renderer {
     sequencer: bool,
     /// Next sixteenth to play, counted from beat 0 of the grid.
     next_step: i64,
+    notes: [[i8; DRUM_STEPS as usize]; NOTE_ROWS],
+    skip: [[bool; DRUM_STEPS as usize]; NOTE_ROWS],
+    bass_filter: f32,
 }
 
 /// Makes a connected pair for a stream running at `sample_rate`.
@@ -186,6 +211,9 @@ pub fn engine(sample_rate: f64) -> (Control, Renderer) {
         pattern: [0; DRUM_TRACKS],
         sequencer: false,
         next_step: 0,
+        notes: [[-1; DRUM_STEPS as usize]; NOTE_ROWS],
+        skip: [[false; DRUM_STEPS as usize]; NOTE_ROWS],
+        bass_filter: 0.45,
     };
     (Control { tx, shared }, renderer)
 }
@@ -216,6 +244,17 @@ impl Renderer {
                                 if let Some(sound) = drum_sound(track as u8) {
                                     self.start(sound, 1.0);
                                 }
+                            }
+                        }
+                        for row in 0..NOTE_ROWS {
+                            let key = self.notes[row][step as usize];
+                            if self.skip[row][step as usize] {
+                                self.skip[row][step as usize] = false;
+                            } else if key >= 0 {
+                                let midi = ROW_BASE[row] + key as u8;
+                                self.note_on(midi, ROW_TIMBRE[row], 0.9);
+                                let off = (self.next_step as f64 + ROW_GATE[row]) / 4.0;
+                                self.schedule(Event::SeqOff(midi, ROW_TIMBRE[row]), off);
                             }
                         }
                         self.next_step += 1;
@@ -301,8 +340,27 @@ impl Renderer {
                     *row = steps;
                 }
             }
+            Command::SetNote { row, step, key } => {
+                if (row as usize) < NOTE_ROWS && (step as i64) < DRUM_STEPS {
+                    self.notes[row as usize][step as usize] = key.clamp(-1, 17);
+                }
+            }
+            Command::RecordNote { row, abs_step, key } => {
+                if (row as usize) < NOTE_ROWS {
+                    let step = abs_step.rem_euclid(DRUM_STEPS) as usize;
+                    self.notes[row as usize][step] = key.clamp(-1, 17);
+                    if self.sequencer && abs_step >= self.next_step {
+                        self.skip[row as usize][step] = true;
+                    }
+                }
+            }
+            Command::BassFilter(v) => self.bass_filter = v.clamp(0.0, 1.0),
             Command::Sequencer(on) => {
                 self.sequencer = on && self.metronome.on;
+                self.skip = [[false; DRUM_STEPS as usize]; NOTE_ROWS];
+                if !self.sequencer {
+                    self.release_rows();
+                }
                 if self.sequencer {
                     let pos = self.metronome.grid.position(self.frame as f64);
                     self.next_step = (pos * 4.0).ceil().max(0.0) as i64;
@@ -320,6 +378,16 @@ impl Renderer {
         self.scheduled = [None; MAX_SCHEDULED];
         self.scheduled_count = 0;
         self.next_due = f64::INFINITY;
+        // The pending ends of sequencer notes went too: let those notes go now.
+        self.release_rows();
+    }
+
+    fn release_rows(&mut self) {
+        for v in self.voices.iter_mut() {
+            if matches!(v.note_timbre(), Some(Timbre::Bass | Timbre::Lead)) {
+                v.release();
+            }
+        }
     }
 
     /// Queues an event; false when it cannot happen (no metronome, past, or full).
@@ -359,6 +427,7 @@ impl Renderer {
                     Event::Count(go) => self.start(Sound::Count(go), 1.0),
                     Event::NoteOn(midi, timbre) => self.note_on(midi, timbre, 0.9),
                     Event::NoteOff(midi) => self.note_off(midi),
+                    Event::SeqOff(midi, timbre) => self.release(midi, Some(timbre)),
                 }
             }
         }
@@ -367,19 +436,33 @@ impl Renderer {
 
     fn note_on(&mut self, midi: u8, timbre: Timbre, velocity: f32) {
         // Pressing a held key again restarts it rather than stacking voices.
-        self.note_off(midi);
-        self.start(Sound::Note(timbre, midi.min(127)), velocity);
+        self.release(midi, Some(timbre));
+        let voice = self.start_voice(Sound::Note(timbre, midi.min(127)), velocity);
+        if timbre == Timbre::Bass {
+            let cutoff = bass_cutoff(self.bass_filter);
+            self.voices[voice].set_sweep((cutoff * 4.0).min(12_000.0), cutoff, 0.08, 4.0);
+        }
     }
 
     fn note_off(&mut self, midi: u8) {
+        self.release(midi, None);
+    }
+
+    /// Lets go of the held voices on `midi`: of one timbre, or of any.
+    fn release(&mut self, midi: u8, timbre: Option<Timbre>) {
         for v in self.voices.iter_mut() {
-            if v.held_note() == Some(midi) {
+            if v.held_note() == Some(midi) && (timbre.is_none() || v.note_timbre() == timbre) {
                 v.release();
             }
         }
     }
 
     fn start(&mut self, sound: Sound, velocity: f32) {
+        self.start_voice(sound, velocity);
+    }
+
+    /// Starts a sound and says which voice took it.
+    fn start_voice(&mut self, sound: Sound, velocity: f32) -> usize {
         // A free voice, else steal the oldest.
         let idx = self
             .voices
@@ -397,6 +480,7 @@ impl Renderer {
             });
         self.seed = self.seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         self.voices[idx].trigger(sound, velocity, self.sample_rate, self.seed);
+        idx
     }
 }
 
@@ -575,6 +659,56 @@ mod tests {
         c.send(Command::Sequencer(false));
         let after = run(&mut r, 48_000 * 2);
         assert!(after[24_000..].iter().all(|s| s.abs() < 1e-3));
+    }
+
+    #[test]
+    fn note_rows_play_on_their_step_and_let_go() {
+        let (mut c, mut r) = engine(SR);
+        c.send(Command::Metronome { on: true, bpm: 120.0 });
+        c.send(Command::Click(false));
+        c.send(Command::SetNote { row: 0, step: 4, key: 9 });
+        c.send(Command::SetNote { row: 1, step: 12, key: 4 });
+        c.send(Command::Sequencer(true));
+        let out = run(&mut r, 48_000 * 2);
+        let grid = c.shared.grid().unwrap();
+        assert_eq!(onsets(&out, grid.origin), vec![4, 12], "bass on step 4, melody on step 12");
+        // The bass is held about half a step, then released: silent well before the melody.
+        let at = |step: f64| (grid.origin + step * 6000.0) as usize;
+        assert!(out[at(7.0)..at(11.5)].iter().all(|s| s.abs() < 1e-3));
+        c.send(Command::Sequencer(false));
+        let after = run(&mut r, 48_000);
+        assert!(after[12_000..].iter().all(|s| s.abs() < 1e-3), "nothing left hanging");
+    }
+
+    #[test]
+    fn a_recorded_note_is_not_doubled_but_plays_from_the_next_loop() {
+        let (mut c, mut r) = engine(SR);
+        c.send(Command::Metronome { on: true, bpm: 120.0 });
+        c.send(Command::Click(false));
+        c.send(Command::Sequencer(true));
+        // Played live just before step 8: the sequencer must not play it again this time round.
+        c.send(Command::RecordNote { row: 0, abs_step: 8, key: 0 });
+        // Played live after step 2 had already gone by: nothing to skip.
+        run(&mut r, 24_000);
+        c.send(Command::RecordNote { row: 0, abs_step: 2, key: 0 });
+        let out = [run(&mut r, 24_000), run(&mut r, 48_000 * 3)].concat();
+        let grid = c.shared.grid().unwrap();
+        let hits = onsets(&out, grid.origin - 24_000.0);
+        assert_eq!(&hits[..2], &[18, 24], "silent at step 8, then steps 2 and 8 of the next bar: {hits:?}");
+    }
+
+    #[test]
+    fn the_bass_filter_makes_the_bass_brighter() {
+        let brightness = |setting: f32| {
+            let (mut c, mut r) = engine(SR);
+            c.send(Command::BassFilter(setting));
+            c.send(Command::NoteOn { midi: 45, timbre: 9, velocity: 1.0 });
+            let out = run(&mut r, 24_000);
+            assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
+            out.windows(2).map(|w| (w[1] - w[0]).abs()).sum::<f32>()
+        };
+        assert!(brightness(1.0) > brightness(0.0) * 2.0);
+        assert!((bass_cutoff(0.0) - 120.0).abs() < 0.01 && (bass_cutoff(1.0) - 7680.0).abs() < 1.0);
     }
 
     #[test]

@@ -124,6 +124,8 @@ fun TastierinaApp() {
             TastiScreen(Modifier.weight(1f).fillMaxWidth())
         } else if (s.level == Level.RITMO) {
             RitmoScreen(Modifier.weight(1f).fillMaxWidth())
+        } else if (s.level == Level.GROOVE) {
+            GrooveScreen(Modifier.weight(1f).fillMaxWidth())
         } else Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (s.level == Level.RIPETI) TurnBar(Modifier.fillMaxWidth().height(46.dp))
@@ -183,7 +185,7 @@ private fun TopBar(onLevels: () -> Unit, onSound: () -> Unit, onHelp: () -> Unit
                     }
                 }
             }
-            Level.RITMO -> {
+            Level.RITMO, Level.GROOVE -> {
                 BpmStepper(s.drumBpm) { s.changeDrumBpm(it) }
                 Action(if (s.drumsPlaying) "Ferma" else "Suona", true, if (s.drumsPlaying) "Ferma il ritmo" else "Fai suonare il ritmo") {
                     if (s.drumsPlaying) s.stopDrums() else s.playDrums()
@@ -279,7 +281,7 @@ private fun Lcd(modifier: Modifier) {
     val e = s.evaluation
     val text = when {
         !s.audioOk -> "audio non disponibile: riapri l'app"
-        s.level == Level.RITMO -> ritmoLcd()
+        s.level == Level.RITMO || s.level == Level.GROOVE -> ritmoLcd()
         s.level == Level.TASTI -> {
             val sg = s.song
             val errs = if (s.errors > 0) " · ${if (s.errors == 1) "1 errore" else "${s.errors} errori"}" else ""
@@ -829,6 +831,14 @@ private fun HelpDialog(onClose: () -> Unit) {
             "Scorrere" to "Trascina su e giù per vedere gli altri suoni: la barretta a destra mostra dove sei.",
             "Suoni" to "Sceglie quali suoni sono righe della griglia: tutti, solo quelli base, o i tuoi.",
             "Svuota" to "Spegne tutto. Subito dopo diventa Annulla, se ci ripensi.",
+        )
+        Level.GROOVE -> listOf(
+            "Batteria / Note" to "Due viste dello stesso giro: la griglia della batteria, e le righe di Melodia e Basso con i tasti sotto.",
+            "Scrivere note" to "Suona un tasto per scegliere la nota, poi tocca le caselle della riga: prendono quella nota. Trascina per riempirne tante.",
+            "Basso / Melodia" to "Scegli su quale riga lavorano i tasti: suonano con quel suono. Va bene anche toccare il nome della riga.",
+            "Registra" to "Il giro parte e le note che suoni sui tasti entrano nella riga scelta, sulla casella più vicina. Prima il basso, poi la melodia sopra.",
+            "Filtro" to "Rende il basso più scuro o più brillante.",
+            "Lezione" to "Dopo la batteria arriva un passo in più: il basso. Il pallino sui tasti mostra la nota da scegliere, le caselle verdi dove metterla.",
         )
     } + listOf(
         "− BPM +" to "Cambia la velocità. Tieni premuto per scorrere in fretta.",

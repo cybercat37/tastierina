@@ -38,7 +38,7 @@ object Engine {
     external fun nativeRepeatStop()
 
     // Keyboard (level 1). Timbre: 0 piano, 1 organo, 2 synth, 3 campana, 4 archi,
-    // 5 flauto, 6 chitarra, 7 marimba, 8 piano elettrico (engine::voices::Timbre).
+    // 5 flauto, 6 chitarra, 7 marimba, 8 piano elettrico, 9 basso, 10 lead (engine::voices::Timbre).
     external fun nativeNoteOn(midi: Int, timbre: Int, velocity: Float)
     external fun nativeNoteOff(midi: Int)
     external fun nativeAllNotesOff()
@@ -68,6 +68,13 @@ object Engine {
     /** Plays the pattern on the running metronome, a step per sixteenth. */
     external fun nativeSequencer(on: Boolean)
     external fun nativeDrum(track: Int)
+
+    // Note rows (level 3): row 0 bass, 1 melody; key 0..17 of the keyboard, -1 silent.
+    external fun nativeSetNote(row: Int, step: Int, key: Int)
+    /** Records a key played at [touchNanos] on the nearest step; returns it, or -1. */
+    external fun nativeRecord(row: Int, key: Int, touchNanos: Long): Int
+    /** 0 dark to 1 bright. */
+    external fun nativeBassFilter(setting: Float)
 
     /** 1 exclusive path, 0 shared, -1 closed. */
     external fun nativeIsExclusive(): Int
