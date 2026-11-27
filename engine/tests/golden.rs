@@ -4,7 +4,7 @@
 //!
 //!     UPDATE_GOLDEN=1 cargo test -p engine --test golden
 
-use engine::voices::Pad;
+use engine::voices::{Pad, Timbre};
 use engine::{engine, Command};
 
 const SR: f64 = 48_000.0;
@@ -21,12 +21,18 @@ struct Features {
     length_ms: f64,
 }
 
-fn features(pad: u8) -> Features {
+fn features(start: Command, release: Option<Command>) -> Features {
     let (mut control, mut renderer) = engine(SR);
     control.send(Command::Volume(1.0));
-    control.send(Command::Hit { pad, velocity: 1.0 });
-    let mut out = vec![0.0f32; 48_000 * 2];
-    for block in out.chunks_mut(256) {
+    control.send(start);
+    let mut out = vec![0.0f32; 48_000 * 3];
+    for (i, block) in out.chunks_mut(256).enumerate() {
+        // Keys are held for half a second.
+        if i * 256 == 24_064 {
+            if let Some(cmd) = release {
+                control.send(cmd);
+            }
+        }
         renderer.render(block, 1);
     }
     let peak = out.iter().fold(0.0f32, |m, s| m.max(s.abs())) as f64;
@@ -44,7 +50,14 @@ fn line(name: &str, f: &Features) -> String {
 
 #[test]
 fn every_pad_still_sounds_the_same() {
-    let lines: Vec<String> = Pad::ALL.iter().map(|&p| line(p.name(), &features(p as u8))).collect();
+    let mut lines: Vec<String> = Pad::ALL
+        .iter()
+        .map(|&p| line(p.name(), &features(Command::Hit { pad: p as u8, velocity: 1.0 }, None)))
+        .collect();
+    for t in Timbre::ALL {
+        let on = Command::NoteOn { midi: 60, timbre: t as u8, velocity: 1.0 };
+        lines.push(line(t.name(), &features(on, Some(Command::NoteOff { midi: 60 }))));
+    }
     if std::env::var_os("UPDATE_GOLDEN").is_some() {
         std::fs::write(GOLDEN, lines.join("\n") + "\n").unwrap();
         return;
@@ -68,6 +81,6 @@ fn every_pad_still_sounds_the_same() {
             }
         }
     }
-    assert_eq!(lines.len(), golden.lines().count(), "number of pads changed");
+    assert_eq!(lines.len(), golden.lines().count(), "number of sounds changed");
     assert!(failures.is_empty(), "sound changed:\n{}", failures.join("\n"));
 }

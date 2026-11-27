@@ -222,3 +222,68 @@ pub extern "system" fn Java_it_tastierina_app_Engine_nativeRepeatStop(_env: JEnv
         o.control.send(Command::ClearScheduled);
     });
 }
+
+// ---- Keyboard (level 1) ----------------------------------------------------
+
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeNoteOn(
+    _env: JEnv,
+    _this: JObj,
+    midi: i32,
+    timbre: i32,
+    velocity: f32,
+) {
+    with_output((), |o| {
+        o.control.send(Command::NoteOn { midi: midi.clamp(0, 127) as u8, timbre: timbre.clamp(0, 255) as u8, velocity });
+    })
+}
+
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeNoteOff(_env: JEnv, _this: JObj, midi: i32) {
+    with_output((), |o| {
+        o.control.send(Command::NoteOff { midi: midi.clamp(0, 127) as u8 });
+    })
+}
+
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeAllNotesOff(_env: JEnv, _this: JObj) {
+    with_output((), |o| {
+        o.control.send(Command::AllNotesOff);
+    })
+}
+
+/// A note at `beat` of the running metronome, held `length` beats (for "Ascolta").
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeScheduleNote(
+    _env: JEnv,
+    _this: JObj,
+    midi: i32,
+    timbre: i32,
+    beat: f64,
+    length: f64,
+) {
+    with_output((), |o| {
+        o.control.send(Command::ScheduleNote {
+            midi: midi.clamp(0, 127) as u8,
+            timbre: timbre.clamp(0, 255) as u8,
+            beat,
+            length,
+        });
+    })
+}
+
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeClearScheduled(_env: JEnv, _this: JObj) {
+    with_output((), |o| {
+        o.control.send(Command::ClearScheduled);
+        o.control.send(Command::AllNotesOff);
+    })
+}
+
+/// Whether the metronome ticks are heard; its beat grid runs either way.
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeSetClick(_env: JEnv, _this: JObj, on: JBoolean) {
+    with_output((), |o| {
+        o.control.send(Command::Click(on != 0));
+    })
+}

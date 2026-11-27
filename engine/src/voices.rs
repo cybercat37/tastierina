@@ -51,9 +51,50 @@ impl Pad {
     }
 }
 
-/// What a voice is playing: a pad, or the metronome tick.
+/// The sounds of the keyboard (level 1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Timbre {
+    Piano = 0,
+    Organ = 1,
+    Synth = 2,
+    Bell = 3,
+}
+
+impl Timbre {
+    pub const ALL: [Timbre; 4] = [Timbre::Piano, Timbre::Organ, Timbre::Synth, Timbre::Bell];
+
+    pub fn from_index(i: u8) -> Timbre {
+        Timbre::ALL.get(i as usize).copied().unwrap_or(Timbre::Piano)
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Timbre::Piano => "piano",
+            Timbre::Organ => "organo",
+            Timbre::Synth => "synth",
+            Timbre::Bell => "campana",
+        }
+    }
+}
+
+/// Frequency of a MIDI note (69 = A4 = 440 Hz).
+pub fn midi_freq(midi: u8) -> f32 {
+    440.0 * 2f32.powf((midi as f32 - 69.0) / 12.0)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stage {
+    Attack,
+    Decay,
+    Release,
+}
+
+/// What a voice is playing: a pad, a held note, or the metronome tick.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sound {
+    /// A keyboard note: sounds until released (or until it dies away, for piano and bell).
+    Note(Timbre, u8),
     Pad(Pad),
     /// `true` for the first beat of the bar.
     Tick(bool),
@@ -74,14 +115,27 @@ pub struct Voice {
     /// Second envelope (tones under noise, filter sweeps).
     env2: f32,
     env2_k: f32,
-    phase: [f32; 3],
+    phase: [f32; 4],
     /// Phase increment per sample, in turns.
-    inc: [f32; 3],
+    inc: [f32; 4],
     /// Pitch glide: current and target frequency, glide multiplier.
     freq: f32,
     freq_end: f32,
     freq_k: f32,
     noise: Noise,
+    /// Per-partial level, the level it settles at, and the glide toward it (notes only).
+    partial: [f32; 4],
+    partial_floor: [f32; 4],
+    partial_k: [f32; 4],
+    midi: u8,
+    stage: Stage,
+    attack: u32,
+    peak: f32,
+    sustain: f32,
+    decay_k: f32,
+    release_k: f32,
+    /// Lower notes a little louder, higher a little softer.
+    track: f32,
     filter: Biquad,
     filter2: Biquad,
     sample_rate: f32,
@@ -98,8 +152,19 @@ impl Voice {
             gain_k: 0.0,
             env2: 0.0,
             env2_k: 0.0,
-            phase: [0.0; 3],
-            inc: [0.0; 3],
+            phase: [0.0; 4],
+            partial: [0.0; 4],
+            partial_floor: [0.0; 4],
+            partial_k: [1.0; 4],
+            midi: 0,
+            stage: Stage::Attack,
+            attack: 0,
+            peak: 0.0,
+            sustain: 0.0,
+            decay_k: 0.0,
+            release_k: 0.0,
+            track: 1.0,
+            inc: [0.0; 4],
             freq: 0.0,
             freq_end: 0.0,
             freq_k: 0.0,
@@ -130,6 +195,44 @@ impl Voice {
         self.noise = Noise::new(seed);
         let secs = |s: f32| (s * sr) as u32;
         match sound {
+            Sound::Note(timbre, midi) => {
+                let f = midi_freq(midi);
+                self.midi = midi;
+                self.track = (261.63 / f).powf(0.25).min(1.3);
+                self.stage = Stage::Attack;
+                // (attack s, peak, decay time constant s, sustain, release time constant s)
+                let (a, peak, dtc, sus, rtc) = match timbre {
+                    Timbre::Piano => (0.004, 0.55, 1.1, 0.0, 0.09),
+                    Timbre::Organ => (0.012, 0.30, 0.2, 0.30, 0.03),
+                    Timbre::Synth => (0.010, 0.30, 0.4, 0.20, 0.08),
+                    Timbre::Bell => (0.002, 0.50, 0.9, 0.0, 0.35),
+                };
+                self.attack = ((a * sr) as u32).max(1);
+                self.peak = peak * v;
+                self.sustain = sus * v;
+                self.decay_k = glide_coef(sr, dtc);
+                self.release_k = glide_coef(sr, rtc);
+                // (frequency ratio, level, decay time constant s or 0 = steady, floor)
+                let partials: [(f32, f32, f32, f32); 4] = match timbre {
+                    Timbre::Piano => [(1.0, 1.0, 0.0, 1.0), (2.0, 0.45, 0.18, 0.06), (4.0, 0.18, 0.06, 0.0), (0.0, 0.0, 0.0, 0.0)],
+                    Timbre::Organ => [(1.0, 1.0, 0.0, 1.0), (2.0, 0.55, 0.0, 0.55), (3.0, 0.3, 0.0, 0.3), (4.0, 0.14, 0.0, 0.14)],
+                    Timbre::Synth => [(0.9954, 0.6, 0.0, 0.6), (1.0046, 0.6, 0.0, 0.6), (0.5, 0.25, 0.0, 0.25), (0.0, 0.0, 0.0, 0.0)],
+                    Timbre::Bell => [(1.0, 1.0, 0.0, 1.0), (2.76, 0.5, 0.5, 0.0), (5.4, 0.25, 0.18, 0.0), (0.0, 0.0, 0.0, 0.0)],
+                };
+                for (i, (ratio, level, tc, floor)) in partials.into_iter().enumerate() {
+                    self.inc[i] = (f * ratio / sr).min(0.45);
+                    self.partial[i] = level;
+                    self.partial_floor[i] = floor;
+                    self.partial_k[i] = if tc > 0.0 { glide_coef(sr, tc) } else { 1.0 };
+                }
+                if timbre == Timbre::Synth {
+                    self.freq = (f * 7.0).min(14_000.0); // filter cutoff, gliding down
+                    self.freq_end = (f * 2.2).min(9_000.0);
+                    self.freq_k = glide_coef(sr, 0.22);
+                    self.filter = Biquad::new(FilterKind::LowPass, sr, self.freq, 5.0);
+                }
+                self.len = u32::MAX;
+            }
             Sound::Pad(Pad::Kick) => {
                 self.gain = 1.0 * v;
                 self.gain_k = decay_coef(sr, 0.45);
@@ -175,7 +278,7 @@ impl Voice {
             Sound::Pad(Pad::Cowbell) => {
                 self.gain = 0.42 * v;
                 self.gain_k = decay_coef(sr, 0.3);
-                self.inc = [540.0 / sr, 800.0 / sr, 0.0];
+                self.inc = [540.0 / sr, 800.0 / sr, 0.0, 0.0];
                 self.filter = Biquad::new(FilterKind::BandPass, sr, 800.0, 1.5);
                 self.len = secs(0.45);
             }
@@ -183,7 +286,7 @@ impl Voice {
                 // A1, a saw and a slightly detuned square under a closing low-pass.
                 self.gain = 0.8 * v;
                 self.gain_k = decay_coef(sr, 0.7);
-                self.inc = [55.0 / sr, 55.3 / sr, 0.0];
+                self.inc = [55.0 / sr, 55.3 / sr, 0.0, 0.0];
                 self.env2 = 1.0;
                 self.env2_k = glide_coef(sr, 0.09);
                 self.filter = Biquad::new(FilterKind::LowPass, sr, 2400.0, 3.0);
@@ -194,7 +297,7 @@ impl Voice {
                 self.gain = 0.0;
                 self.env2 = 0.6 * v; // target level, reached after a 6 ms attack
                 self.gain_k = decay_coef(sr, 1.0);
-                self.inc = [220.0 / sr, 261.63 / sr, 329.63 / sr];
+                self.inc = [220.0 / sr, 261.63 / sr, 329.63 / sr, 0.0];
                 self.filter = Biquad::new(FilterKind::LowPass, sr, 2600.0, 0.7);
                 self.len = secs(1.3);
             }
@@ -202,14 +305,14 @@ impl Voice {
                 // A short square beep, a fifth or an octave above the tick.
                 self.gain = 0.32 * v.max(0.5);
                 self.gain_k = decay_coef(sr, 0.12);
-                self.inc = [if go { 2093.0 } else { 1568.0 } / sr, 0.0, 0.0];
+                self.inc = [if go { 2093.0 } else { 1568.0 } / sr, 0.0, 0.0, 0.0];
                 self.filter = Biquad::new(FilterKind::LowPass, sr, 4000.0, 0.7);
                 self.len = secs(0.16);
             }
             Sound::Tick(accent) => {
                 self.gain = if accent { 0.4 } else { 0.28 } * v.max(0.5);
                 self.gain_k = decay_coef(sr, 0.05);
-                self.inc = [if accent { 1568.0 } else { 1046.5 } / sr, 0.0, 0.0];
+                self.inc = [if accent { 1568.0 } else { 1046.5 } / sr, 0.0, 0.0, 0.0];
                 self.len = secs(0.08);
             }
         }
@@ -222,7 +325,11 @@ impl Voice {
             return 0.0;
         }
         let sr = self.sample_rate;
+        if let Sound::Note(timbre, _) = self.sound {
+            return self.next_note(timbre);
+        }
         let out = match self.sound {
+            Sound::Note(..) => 0.0,
             Sound::Pad(Pad::Kick) | Sound::Pad(Pad::Tom) => {
                 self.freq = self.freq_end + (self.freq - self.freq_end) * self.freq_k;
                 self.phase[0] = (self.phase[0] + self.freq / sr).fract();
@@ -314,6 +421,75 @@ impl Voice {
     }
 }
 
+impl Voice {
+    /// The MIDI note this voice holds, if it is a keyboard note not yet released.
+    pub fn held_note(&self) -> Option<u8> {
+        match self.sound {
+            Sound::Note(..) if self.active && self.stage != Stage::Release => Some(self.midi),
+            _ => None,
+        }
+    }
+
+    pub fn is_released(&self) -> bool {
+        self.stage == Stage::Release
+    }
+
+    /// Lets go of a keyboard note: it fades with its timbre's release.
+    pub fn release(&mut self) {
+        if matches!(self.sound, Sound::Note(..)) && self.active {
+            if self.stage == Stage::Attack {
+                self.gain = self.peak * (self.t as f32 / self.attack as f32);
+            }
+            self.stage = Stage::Release;
+        }
+    }
+
+    #[inline]
+    fn next_note(&mut self, timbre: Timbre) -> f32 {
+        match self.stage {
+            Stage::Attack => {
+                self.gain = self.peak * (self.t as f32 / self.attack as f32);
+                if self.t >= self.attack {
+                    self.gain = self.peak;
+                    self.stage = Stage::Decay;
+                }
+            }
+            Stage::Decay => self.gain = self.sustain + (self.gain - self.sustain) * self.decay_k,
+            Stage::Release => self.gain *= self.release_k,
+        }
+        let mut s = 0.0;
+        for i in 0..4 {
+            if self.partial[i] == 0.0 && self.partial_floor[i] == 0.0 {
+                continue;
+            }
+            self.phase[i] = (self.phase[i] + self.inc[i]).fract();
+            let p = self.phase[i];
+            let wave = match (timbre, i) {
+                (Timbre::Piano, 0) => triangle_turns(p),
+                (Timbre::Synth, 0) | (Timbre::Synth, 1) => saw_turns(p),
+                (Timbre::Synth, _) => square_turns(p),
+                _ => sin_turns(p),
+            };
+            s += wave * self.partial[i];
+            self.partial[i] = self.partial_floor[i] + (self.partial[i] - self.partial_floor[i]) * self.partial_k[i];
+        }
+        if timbre == Timbre::Synth {
+            if self.t % 32 == 0 {
+                self.freq = self.freq_end + (self.freq - self.freq_end) * self.freq_k.powi(32);
+                self.filter.set(FilterKind::LowPass, self.sample_rate, self.freq, 5.0);
+            }
+            s = self.filter.process(s);
+        }
+        self.t += 1;
+        let quiet = self.gain < 1e-5 && self.stage != Stage::Attack;
+        let dead = self.stage == Stage::Release || self.sustain == 0.0;
+        if quiet && dead {
+            self.active = false;
+        }
+        s * self.gain * self.track
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,6 +502,44 @@ mod tests {
             out.push(v.next());
         }
         out
+    }
+
+    #[test]
+    fn notes_sustain_while_held_and_stop_when_released() {
+        for timbre in Timbre::ALL {
+            let mut v = Voice::silent();
+            v.trigger(Sound::Note(timbre, 60), 1.0, 48_000.0, 1);
+            let held: Vec<f32> = (0..48_000).map(|_| v.next()).collect();
+            assert!(held.iter().all(|x| x.is_finite()));
+            let peak = held.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+            assert!(peak > 0.1 && peak < 1.2, "{timbre:?} peak {peak}");
+            let sustains = matches!(timbre, Timbre::Organ | Timbre::Synth);
+            let late = held[40_000..].iter().fold(0.0f32, |m, x| m.max(x.abs()));
+            if sustains {
+                assert!(v.is_active() && late > 0.05, "{timbre:?} holds while the key is down");
+                assert_eq!(v.held_note(), Some(60));
+            }
+            v.release();
+            assert_eq!(v.held_note(), None);
+            let mut n = 0;
+            while v.is_active() && n < 48_000 * 6 {
+                v.next();
+                n += 1;
+            }
+            assert!(!v.is_active(), "{timbre:?} stops after release");
+        }
+    }
+
+    #[test]
+    fn higher_notes_are_higher() {
+        let crossings = |midi: u8| {
+            let mut v = Voice::silent();
+            v.trigger(Sound::Note(Timbre::Organ, midi), 1.0, 48_000.0, 1);
+            let out: Vec<f32> = (0..24_000).map(|_| v.next()).collect();
+            out.windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count()
+        };
+        assert!(crossings(72) > crossings(60) && crossings(60) > crossings(48));
+        assert!((midi_freq(69) - 440.0).abs() < 1e-3 && (midi_freq(57) - 220.0).abs() < 1e-3);
     }
 
     #[test]

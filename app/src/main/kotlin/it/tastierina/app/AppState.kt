@@ -13,6 +13,7 @@ import androidx.compose.runtime.setValue
 enum class Level(val number: String, val title: String) {
     PAD("0", "Pad"),
     RIPETI("0.5", "Ripeti"),
+    TASTI("1", "Tastierina"),
 }
 
 /** Where a "Ripeti" round is, from the beat being heard. */
@@ -101,7 +102,29 @@ object AppState {
     private var prefs: SharedPreferences? = null
     private var frames = 0
 
-    val metronomeRunning: Boolean get() = tempo || level == Level.RIPETI
+    // Tastierina
+    val timbreNames = listOf("Piano", "Organo", "Synth", "Campana")
+    var timbre by mutableIntStateOf(0)
+        private set
+    var octave by mutableIntStateOf(0)
+        private set
+    /** How many fingers hold each key (the note sounds while > 0). */
+    val held = mutableStateListOf<Int>().apply { repeat(KEY_COUNT) { add(0) } }
+    var song by mutableStateOf<Song?>(SONGS.first())
+        private set
+    var songStep by mutableIntStateOf(0)
+        private set
+    var songDone by mutableStateOf(false)
+        private set
+    /** "Ascolta": beat where each note of the song starts, while the song plays by itself. */
+    var demoStarts by mutableStateOf<List<Double>?>(null)
+        private set
+    /** Key the demo is playing now, or -1. */
+    var demoKey by mutableIntStateOf(-1)
+        private set
+    private var demoEnd = 0.0
+
+    val metronomeRunning: Boolean get() = tempo || level == Level.RIPETI || demoStarts != null
 
     /** Beats since the start of the current Ripeti round, or NaN. */
     val ripetiBeat: Double get() = beatPosition - roundStart
@@ -126,6 +149,11 @@ object AppState {
         bpm = p.getInt("bpm", 90).coerceIn(BPM_MIN, BPM_MAX)
         best = p.getInt("best", 0)
         bestRound = p.getInt("bestRound", 0)
+        timbre = p.getInt("timbre", 0).coerceIn(0, 3)
+        octave = p.getInt("octave", 0).coerceIn(-2, 2)
+        val id = p.getString("song", SONGS.first().id)
+        song = SONGS.firstOrNull { it.id == id }
+        level = Level.entries.getOrNull(p.getInt("level", 0)) ?: Level.PAD
     }
 
     private fun save() {
@@ -134,6 +162,10 @@ object AppState {
             ?.putInt("bpm", bpm)
             ?.putInt("best", best)
             ?.putInt("bestRound", bestRound)
+            ?.putInt("timbre", timbre)
+            ?.putInt("octave", octave)
+            ?.putString("song", song?.id ?: "")
+            ?.putInt("level", level.ordinal)
             ?.apply()
     }
 
@@ -145,7 +177,13 @@ object AppState {
         if (level == Level.RIPETI) startRipeti()
     }
 
-    fun stopAudio() = Engine.nativeStop()
+    fun stopAudio() {
+        // A new stream starts clean: nothing held, nothing playing by itself.
+        demoStarts = null
+        demoKey = -1
+        for (i in 0 until KEY_COUNT) held[i] = 0
+        Engine.nativeStop()
+    }
 
     /** Called once per UI frame. */
     fun tick(frameNanos: Long) {
@@ -153,6 +191,7 @@ object AppState {
         val pos = if (metronomeRunning) Engine.nativeBeatPosition(System.nanoTime()) else Double.NaN
         beatPosition = pos
         if (level == Level.RIPETI && !pos.isNaN()) followRipeti(pos)
+        if (demoStarts != null && !pos.isNaN()) followDemo(pos)
         previousPosition = pos
         frames++
         if (frames % 30 == 0 && Engine.nativeNeedsRestart()) {
@@ -178,9 +217,11 @@ object AppState {
     fun selectLevel(l: Level) {
         if (l == level) return
         if (level == Level.RIPETI) stopRipeti()
+        if (level == Level.TASTI) leaveKeyboard()
         if (tempo) setTempoMode(false)
         level = l
         if (l == Level.RIPETI) startRipeti()
+        save()
     }
 
     fun setTempoMode(on: Boolean) {
@@ -289,5 +330,111 @@ object AppState {
             pendingStart = null
             beginRound(pending, pendingPhrase)
         }
+    }
+
+    // ---- Tastierina ----------------------------------------------------------
+
+    private fun midiOf(key: Int) = 60 + 12 * octave + key
+
+    fun keyDown(key: Int) {
+        if (key !in 0 until KEY_COUNT) return
+        held[key] = held[key] + 1
+        if (held[key] == 1) {
+            Engine.nativeNoteOn(midiOf(key), timbre, 0.9f)
+            followSong(key)
+        }
+    }
+
+    fun keyUp(key: Int) {
+        if (key !in 0 until KEY_COUNT || held[key] == 0) return
+        held[key] = held[key] - 1
+        if (held[key] == 0) Engine.nativeNoteOff(midiOf(key))
+    }
+
+    private fun releaseAllKeys() {
+        Engine.nativeAllNotesOff()
+        for (i in 0 until KEY_COUNT) held[i] = 0
+    }
+
+    fun selectTimbre(t: Int) {
+        timbre = t.coerceIn(0, 3)
+        save()
+    }
+
+    fun changeOctave(delta: Int) {
+        val o = (octave + delta).coerceIn(-2, 2)
+        if (o == octave) return
+        releaseAllKeys()
+        octave = o
+        save()
+    }
+
+    fun selectSong(s: Song?) {
+        stopDemo()
+        song = s
+        songStep = 0
+        songDone = false
+        save()
+    }
+
+    /** The song waits for you: the dot moves on only with the right key. */
+    private fun followSong(key: Int) {
+        val sg = song ?: return
+        if (demoStarts != null) return
+        songDone = false
+        if (key != sg.notes[songStep].key) return
+        songStep += 1
+        if (songStep >= sg.notes.size) {
+            songStep = 0
+            songDone = true
+        }
+    }
+
+    /** "Ascolta": the engine plays the whole song on the beat grid, with the click muted. */
+    fun startDemo() {
+        val sg = song ?: return
+        releaseAllKeys()
+        Engine.nativeClearScheduled()
+        Engine.nativeSetMetronome(false, sg.bpm.toFloat())
+        Engine.nativeSetClick(false)
+        Engine.nativeSetMetronome(true, sg.bpm.toFloat())
+        val starts = ArrayList<Double>(sg.notes.size)
+        var t = 1.0
+        for (n in sg.notes) {
+            starts += t
+            Engine.nativeScheduleNote(midiOf(n.key), timbre, t, n.beats * 0.88)
+            t += n.beats
+        }
+        demoEnd = t
+        demoStarts = starts
+        songStep = 0
+        songDone = false
+    }
+
+    fun stopDemo() {
+        if (demoStarts == null) return
+        demoStarts = null
+        demoKey = -1
+        Engine.nativeClearScheduled()
+        Engine.nativeSetMetronome(false, bpm.toFloat())
+        Engine.nativeSetClick(true)
+        songStep = 0
+    }
+
+    private fun followDemo(pos: Double) {
+        val starts = demoStarts ?: return
+        val sg = song ?: return
+        val i = starts.indexOfLast { it <= pos }
+        if (i >= 0) {
+            songStep = i
+            val noteEnd = starts[i] + sg.notes[i].beats * 0.88
+            demoKey = if (pos < noteEnd) sg.notes[i].key else -1
+        }
+        if (pos >= demoEnd + 0.3) stopDemo()
+    }
+
+    private fun leaveKeyboard() {
+        stopDemo()
+        releaseAllKeys()
     }
 }

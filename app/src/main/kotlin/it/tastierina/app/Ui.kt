@@ -113,7 +113,9 @@ fun TastierinaApp() {
             onSound = { showSound = true },
             onHelp = { showHelp = true },
         )
-        Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        if (s.level == Level.TASTI) {
+            TastiScreen(Modifier.weight(1f).fillMaxWidth())
+        } else Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (s.level == Level.RIPETI) TurnBar(Modifier.fillMaxWidth().height(46.dp))
                 PadGrid(Modifier.weight(1f).fillMaxWidth())
@@ -149,7 +151,7 @@ private fun TopBar(onLevels: () -> Unit, onSound: () -> Unit, onHelp: () -> Unit
             Text("▾", color = C.ivory, fontSize = 12.sp)
         }
         Lcd(Modifier.weight(1f))
-        if (s.metronomeRunning) {
+        if (s.metronomeRunning && s.level != Level.TASTI) {
             Pill(dark = true, label = "Velocità più lenta", onClick = { s.changeBpm(-5) }) {
                 Text("−", color = C.ivory, fontSize = 18.sp, fontWeight = FontWeight.Bold)
             }
@@ -158,7 +160,19 @@ private fun TopBar(onLevels: () -> Unit, onSound: () -> Unit, onHelp: () -> Unit
                 Text("+", color = C.ivory, fontSize = 18.sp, fontWeight = FontWeight.Bold)
             }
         }
-        if (s.level == Level.PAD) {
+        if (s.level == Level.TASTI) {
+            if (s.song != null) {
+                val playing = s.demoStarts != null
+                Pill(
+                    dark = false,
+                    filled = playing,
+                    label = if (playing) "Ferma l'ascolto" else "Ascolta la canzone",
+                    onClick = { if (playing) s.stopDemo() else s.startDemo() },
+                ) {
+                    Text(if (playing) "Ferma" else "Ascolta", color = C.ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        } else if (s.level == Level.PAD) {
             Pill(
                 dark = false,
                 filled = s.tempo,
@@ -192,6 +206,15 @@ private fun Lcd(modifier: Modifier) {
     val e = s.evaluation
     val text = when {
         !s.audioOk -> "audio non disponibile: riapri l'app"
+        s.level == Level.TASTI -> {
+            val sg = s.song
+            when {
+                sg == null -> "suona libera"
+                s.demoStarts != null -> "ascolta: ${keyName(sg.notes[s.songStep].key)}  ${s.songStep + 1}/${sg.notes.size}"
+                s.songDone -> "BRAVO! ${sg.title} finita: si ricomincia"
+                else -> "premi ${keyName(sg.notes[s.songStep].key)}  ${s.songStep + 1}/${sg.notes.size}"
+            }
+        }
         s.level == Level.RIPETI -> when {
             s.pendingStart != null -> if (s.pendingIsReplay) "a fine battuta la risenti" else "a fine battuta: frase nuova"
             s.ripetiPhase == RipetiPhase.COUNT_IN -> "pronti: tra poco la frase"
@@ -684,6 +707,7 @@ private fun HelpDialog(onClose: () -> Unit) {
         "Pad" to "Tocca un pad per sentirlo. Puoi usare più dita insieme.",
         "Tieni il tempo" to "Parte il battito: tocca la Cassa su ogni colpo. Il pannello a destra dice se eri a tempo, oppure quanto prima o dopo il battito.",
         "Ripeti" to "Livello 0.5: ascolta la frase, aspetta il conto 4, 3, 2, 1 e ripetila a tempo, battuta dopo battuta, quante volte vuoi. La prima nota cade proprio dopo l'1. Ogni battuta ha il suo esito. Risenti la fa riascoltare, Prossima passa a una frase nuova, più lunga se almeno una battuta era giusta.",
+        "Tastierina" to "Livello 1: 18 tasti da suonare con più dita, anche trascinando. Scegli una canzone: il pallino pieno è il tasto da premere, il cerchietto quello dopo, e la canzone ti aspetta. Ascolta la fa sentire intera.",
         "− BPM +" to "Cambia la velocità del battito, anche mentre suona.",
         "Livello" to "Da qui si sale di livello, man mano che arrivano.",
         "≡" to "Volume, e quanto ritardo ha l'audio su questo telefono.",

@@ -37,6 +37,17 @@ object Engine {
     external fun nativeRepeatResult(barStart: Long): Long
     external fun nativeRepeatStop()
 
+    // Keyboard (level 1). Timbre: 0 piano, 1 organo, 2 synth, 3 campana.
+    external fun nativeNoteOn(midi: Int, timbre: Int, velocity: Float)
+    external fun nativeNoteOff(midi: Int)
+    external fun nativeAllNotesOff()
+    /** A note at [beat] of the running metronome, held [length] beats. */
+    external fun nativeScheduleNote(midi: Int, timbre: Int, beat: Double, length: Double)
+    /** Drops everything scheduled and lets go of every note. */
+    external fun nativeClearScheduled()
+    /** Whether the metronome ticks are heard; the beat grid runs either way. */
+    external fun nativeSetClick(on: Boolean)
+
     /** 1 exclusive path, 0 shared, -1 closed. */
     external fun nativeIsExclusive(): Int
     external fun nativeSampleRate(): Int

@@ -16,15 +16,21 @@ use std::sync::Arc;
 
 use dsp::soft_clip;
 use timing::BeatGrid;
-use voices::{Pad, Sound, Voice};
+use voices::{Pad, Sound, Timbre, Voice};
 
 pub const MAX_VOICES: usize = 24;
 pub const QUEUE_LEN: usize = 256;
-/// Pads waiting to be played at a future beat.
-pub const MAX_SCHEDULED: usize = 32;
-/// Codes in the schedule above the pads: count-in beeps.
-const CODE_COUNT: u8 = 254;
-const CODE_COUNT_GO: u8 = 255;
+/// Events waiting for a future beat: enough for a whole song's notes and releases.
+pub const MAX_SCHEDULED: usize = 160;
+
+/// Something to do at a beat of the metronome grid.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Event {
+    Pad(u8),
+    Count(bool),
+    NoteOn(u8, Timbre),
+    NoteOff(u8),
+}
 pub const BPM_MIN: f32 = 50.0;
 pub const BPM_MAX: f32 = 180.0;
 
@@ -41,7 +47,17 @@ pub enum Command {
     Schedule { pad: u8, beat: f64 },
     /// A count-in beep at a beat (`go` for the last count). Same rules as `Schedule`.
     ScheduleCount { beat: f64, go: bool },
-    /// Forget every scheduled pad.
+    /// Press a keyboard key: `midi` sounds with `timbre` until `NoteOff`.
+    NoteOn { midi: u8, timbre: u8, velocity: f32 },
+    /// Let go of a keyboard key.
+    NoteOff { midi: u8 },
+    /// Let go of every keyboard key.
+    AllNotesOff,
+    /// A keyboard note at a beat, held for `length` beats. Same rules as `Schedule`.
+    ScheduleNote { midi: u8, timbre: u8, beat: f64, length: f64 },
+    /// Whether the metronome ticks are heard (the grid keeps running either way).
+    Click(bool),
+    /// Forget everything scheduled.
     ClearScheduled,
 }
 
@@ -103,9 +119,12 @@ pub struct Renderer {
     metronome: Metronome,
     volume: f32,
     seed: u32,
-    /// (pad, beat) slots; `None` is free.
-    scheduled: [Option<(u8, f64)>; MAX_SCHEDULED],
+    /// (event, beat) slots; `None` is free.
+    scheduled: [Option<(Event, f64)>; MAX_SCHEDULED],
     scheduled_count: usize,
+    /// Earliest scheduled beat, so the per-sample check is one comparison.
+    next_due: f64,
+    click: bool,
 }
 
 /// Makes a connected pair for a stream running at `sample_rate`.
@@ -129,6 +148,8 @@ pub fn engine(sample_rate: f64) -> (Control, Renderer) {
         seed: 0x9E37_79B9,
         scheduled: [None; MAX_SCHEDULED],
         scheduled_count: 0,
+        next_due: f64::INFINITY,
+        click: true,
     };
     (Control { tx, shared }, renderer)
 }
@@ -145,10 +166,12 @@ impl Renderer {
                 let due = self.metronome.grid.frame_of(self.metronome.next_beat);
                 if self.frame as f64 >= due {
                     let accent = self.metronome.next_beat.rem_euclid(4) == 0;
-                    self.start(Sound::Tick(accent), 1.0);
+                    if self.click {
+                        self.start(Sound::Tick(accent), 1.0);
+                    }
                     self.metronome.next_beat += 1;
                 }
-                if self.scheduled_count > 0 {
+                if self.scheduled_count > 0 && self.metronome.grid.position(self.frame as f64) >= self.next_due {
                     self.play_due();
                 }
             }
@@ -172,8 +195,7 @@ impl Renderer {
             }
             Command::Metronome { on: false, .. } => {
                 self.metronome.on = false;
-                self.scheduled = [None; MAX_SCHEDULED];
-                self.scheduled_count = 0;
+                self.clear_scheduled();
                 self.shared.metronome_on.store(false, Ordering::Release);
             }
             Command::Metronome { on: true, bpm } => {
@@ -196,45 +218,88 @@ impl Renderer {
             Command::Volume(v) => self.volume = v.clamp(0.0, 1.0),
             Command::Schedule { pad, beat } => {
                 if Pad::from_index(pad).is_some() {
-                    self.schedule(pad, beat);
+                    self.schedule(Event::Pad(pad), beat);
                 }
             }
-            Command::ScheduleCount { beat, go } => self.schedule(if go { CODE_COUNT_GO } else { CODE_COUNT }, beat),
-            Command::ClearScheduled => {
-                self.scheduled = [None; MAX_SCHEDULED];
-                self.scheduled_count = 0;
+            Command::ScheduleCount { beat, go } => {
+                self.schedule(Event::Count(go), beat);
             }
+            Command::ScheduleNote { midi, timbre, beat, length } => {
+                if self.schedule(Event::NoteOn(midi, Timbre::from_index(timbre)), beat) {
+                    self.schedule(Event::NoteOff(midi), beat + length.max(0.05));
+                }
+            }
+            Command::ClearScheduled => self.clear_scheduled(),
+            Command::NoteOn { midi, timbre, velocity } => self.note_on(midi, Timbre::from_index(timbre), velocity),
+            Command::NoteOff { midi } => self.note_off(midi),
+            Command::AllNotesOff => {
+                for v in self.voices.iter_mut() {
+                    v.release();
+                }
+            }
+            Command::Click(on) => self.click = on,
         }
     }
 
-    fn schedule(&mut self, code: u8, beat: f64) {
+    fn clear_scheduled(&mut self) {
+        self.scheduled = [None; MAX_SCHEDULED];
+        self.scheduled_count = 0;
+        self.next_due = f64::INFINITY;
+    }
+
+    /// Queues an event; false when it cannot happen (no metronome, past, or full).
+    fn schedule(&mut self, event: Event, beat: f64) -> bool {
         let past = self.metronome.on && self.metronome.grid.position(self.frame as f64) > beat;
         if !self.metronome.on || past {
-            return;
+            return false;
         }
-        if let Some(slot) = self.scheduled.iter_mut().find(|s| s.is_none()) {
-            *slot = Some((code, beat));
-            self.scheduled_count += 1;
+        match self.scheduled.iter_mut().find(|s| s.is_none()) {
+            Some(slot) => {
+                *slot = Some((event, beat));
+                self.scheduled_count += 1;
+                self.next_due = self.next_due.min(beat);
+                true
+            }
+            None => false,
         }
     }
 
     fn play_due(&mut self) {
         let pos = self.metronome.grid.position(self.frame as f64);
+        let mut next = f64::INFINITY;
         for i in 0..MAX_SCHEDULED {
-            if let Some((pad, beat)) = self.scheduled[i] {
-                if pos >= beat {
-                    self.scheduled[i] = None;
-                    self.scheduled_count -= 1;
-                    match pad {
-                        CODE_COUNT => self.start(Sound::Count(false), 1.0),
-                        CODE_COUNT_GO => self.start(Sound::Count(true), 1.0),
-                        _ => {
-                            if let Some(p) = Pad::from_index(pad) {
-                                self.start(Sound::Pad(p), 1.0);
-                            }
+            if let Some((event, beat)) = self.scheduled[i] {
+                if pos < beat {
+                    next = next.min(beat);
+                    continue;
+                }
+                self.scheduled[i] = None;
+                self.scheduled_count -= 1;
+                match event {
+                    Event::Pad(pad) => {
+                        if let Some(p) = Pad::from_index(pad) {
+                            self.start(Sound::Pad(p), 1.0);
                         }
                     }
+                    Event::Count(go) => self.start(Sound::Count(go), 1.0),
+                    Event::NoteOn(midi, timbre) => self.note_on(midi, timbre, 0.9),
+                    Event::NoteOff(midi) => self.note_off(midi),
                 }
+            }
+        }
+        self.next_due = next;
+    }
+
+    fn note_on(&mut self, midi: u8, timbre: Timbre, velocity: f32) {
+        // Pressing a held key again restarts it rather than stacking voices.
+        self.note_off(midi);
+        self.start(Sound::Note(timbre, midi.min(127)), velocity);
+    }
+
+    fn note_off(&mut self, midi: u8) {
+        for v in self.voices.iter_mut() {
+            if v.held_note() == Some(midi) {
+                v.release();
             }
         }
     }
@@ -245,6 +310,7 @@ impl Renderer {
             .voices
             .iter()
             .position(|v| !v.is_active())
+            .or_else(|| self.voices.iter().position(|v| v.is_released()))
             .unwrap_or_else(|| {
                 let mut oldest = 0;
                 for (i, v) in self.voices.iter().enumerate() {
@@ -343,6 +409,45 @@ mod tests {
         let at = (grid.origin + 1.5 * grid.frames_per_beat - 480.0).ceil() as usize;
         assert!(out[at - 2000..at].iter().all(|s| s.abs() < 1e-3));
         assert!(out[at..at + 400].iter().any(|s| s.abs() > 0.05));
+    }
+
+    #[test]
+    fn a_held_note_sounds_until_released() {
+        let (mut c, mut r) = engine(SR);
+        c.send(Command::NoteOn { midi: 60, timbre: 1, velocity: 1.0 });
+        let held = run(&mut r, 24_000);
+        assert!(held[20_000..].iter().any(|s| s.abs() > 0.05), "organ holds");
+        c.send(Command::NoteOff { midi: 60 });
+        let after = run(&mut r, 24_000);
+        assert!(after[12_000..].iter().all(|s| s.abs() < 1e-3), "and stops");
+    }
+
+    #[test]
+    fn many_keys_at_once_and_all_notes_off() {
+        let (mut c, mut r) = engine(SR);
+        for midi in 48..66 {
+            c.send(Command::NoteOn { midi, timbre: 2, velocity: 1.0 });
+        }
+        let out = run(&mut r, 9600);
+        assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
+        c.send(Command::AllNotesOff);
+        let after = run(&mut r, 48_000);
+        assert!(after[36_000..].iter().all(|s| s.abs() < 1e-3));
+    }
+
+    #[test]
+    fn scheduled_notes_start_and_stop_on_their_beats() {
+        let (mut c, mut r) = engine(SR);
+        c.send(Command::Metronome { on: true, bpm: 120.0 });
+        c.send(Command::Click(false));
+        run(&mut r, 480);
+        let grid = c.shared.grid().unwrap();
+        c.send(Command::ScheduleNote { midi: 67, timbre: 1, beat: 1.0, length: 1.0 });
+        let out = run(&mut r, 48_000 * 2);
+        let frame = |beat: f64| (grid.origin + beat * grid.frames_per_beat - 480.0).ceil() as usize;
+        assert!(out[..frame(1.0)].iter().all(|s| s.abs() < 1e-3), "silent before, no click");
+        assert!(out[frame(1.0)..frame(1.9)].iter().any(|s| s.abs() > 0.05), "sounds for its length");
+        assert!(out[frame(2.6)..frame(3.0)].iter().all(|s| s.abs() < 1e-3), "released after");
     }
 
     #[test]

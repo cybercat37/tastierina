@@ -6,3 +6,7 @@ tom peak=0.6636 rms=0.1460 crossings=242 length_ms=334.5
 cowbell peak=0.6867 rms=0.1135 crossings=1598 length_ms=296.5
 basso peak=0.6485 rms=0.0595 crossings=370 length_ms=689.6
 accordo peak=0.3903 rms=0.0550 crossings=590 length_ms=911.7
+piano peak=0.5931 rms=0.1838 crossings=524 length_ms=1028.2
+organo peak=0.4233 rms=0.2095 crossings=522 length_ms=683.8
+synth peak=0.7449 rms=0.1466 crossings=1189 length_ms=937.7
+campana peak=0.7062 rms=0.1365 crossings=530 length_ms=2479.7

@@ -8,7 +8,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-use engine::voices::Pad;
+use engine::voices::{Pad, Timbre};
 use engine::{engine, Command};
 
 const SR: u32 = 48_000;
@@ -61,6 +61,18 @@ fn main() -> std::io::Result<()> {
         let samples = render(&[(0, Command::Hit { pad: pad as u8, velocity: 1.0 })], 1.5);
         let path = dir.join(format!("{}-{}.wav", pad as u8, pad.name()));
         write_wav(&path, &samples)?;
+        println!("{}", path.display());
+    }
+    // A C major scale on each keyboard timbre, a quarter second per note.
+    for t in Timbre::ALL {
+        let mut cmds = Vec::new();
+        for (k, midi) in [60u8, 62, 64, 65, 67, 69, 71, 72].into_iter().enumerate() {
+            let at = k * (SR as usize / 4);
+            cmds.push((at, Command::NoteOn { midi, timbre: t as u8, velocity: 0.9 }));
+            cmds.push((at + SR as usize / 5, Command::NoteOff { midi }));
+        }
+        let path = dir.join(format!("tasti-{}.wav", t.name()));
+        write_wav(&path, &render(&cmds, 3.0))?;
         println!("{}", path.display());
     }
     // Two bars of metronome at 100 BPM with the kick on every beat, slightly late.
