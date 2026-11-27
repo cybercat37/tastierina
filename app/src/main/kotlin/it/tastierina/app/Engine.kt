@@ -37,7 +37,8 @@ object Engine {
     external fun nativeRepeatResult(barStart: Long): Long
     external fun nativeRepeatStop()
 
-    // Keyboard (level 1). Timbre: 0 piano, 1 organo, 2 synth, 3 campana.
+    // Keyboard (level 1). Timbre: 0 piano, 1 organo, 2 synth, 3 campana, 4 archi,
+    // 5 flauto, 6 chitarra, 7 marimba, 8 piano elettrico (engine::voices::Timbre).
     external fun nativeNoteOn(midi: Int, timbre: Int, velocity: Float)
     external fun nativeNoteOff(midi: Int)
     external fun nativeAllNotesOff()

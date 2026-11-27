@@ -59,10 +59,25 @@ pub enum Timbre {
     Organ = 1,
     Synth = 2,
     Bell = 3,
+    Strings = 4,
+    Flute = 5,
+    Guitar = 6,
+    Marimba = 7,
+    ElectricPiano = 8,
 }
 
 impl Timbre {
-    pub const ALL: [Timbre; 4] = [Timbre::Piano, Timbre::Organ, Timbre::Synth, Timbre::Bell];
+    pub const ALL: [Timbre; 9] = [
+        Timbre::Piano,
+        Timbre::Organ,
+        Timbre::Synth,
+        Timbre::Bell,
+        Timbre::Strings,
+        Timbre::Flute,
+        Timbre::Guitar,
+        Timbre::Marimba,
+        Timbre::ElectricPiano,
+    ];
 
     pub fn from_index(i: u8) -> Timbre {
         Timbre::ALL.get(i as usize).copied().unwrap_or(Timbre::Piano)
@@ -74,6 +89,11 @@ impl Timbre {
             Timbre::Organ => "organo",
             Timbre::Synth => "synth",
             Timbre::Bell => "campana",
+            Timbre::Strings => "archi",
+            Timbre::Flute => "flauto",
+            Timbre::Guitar => "chitarra",
+            Timbre::Marimba => "marimba",
+            Timbre::ElectricPiano => "piano-elettrico",
         }
     }
 }
@@ -206,6 +226,13 @@ impl Voice {
                     Timbre::Organ => (0.012, 0.30, 0.2, 0.30, 0.03),
                     Timbre::Synth => (0.010, 0.30, 0.4, 0.20, 0.08),
                     Timbre::Bell => (0.002, 0.50, 0.9, 0.0, 0.35),
+                    // A slow bow, then a long sustain.
+                    Timbre::Strings => (0.15, 0.55, 0.5, 0.45, 0.35),
+                    Timbre::Flute => (0.06, 0.40, 0.3, 0.34, 0.12),
+                    // Plucked and struck: no sustain, they ring and fade.
+                    Timbre::Guitar => (0.002, 0.60, 1.4, 0.0, 0.2),
+                    Timbre::Marimba => (0.001, 0.60, 0.45, 0.0, 0.15),
+                    Timbre::ElectricPiano => (0.003, 0.50, 1.4, 0.0, 0.25),
                 };
                 self.attack = ((a * sr) as u32).max(1);
                 self.peak = peak * v;
@@ -218,6 +245,16 @@ impl Voice {
                     Timbre::Organ => [(1.0, 1.0, 0.0, 1.0), (2.0, 0.55, 0.0, 0.55), (3.0, 0.3, 0.0, 0.3), (4.0, 0.14, 0.0, 0.14)],
                     Timbre::Synth => [(0.9954, 0.6, 0.0, 0.6), (1.0046, 0.6, 0.0, 0.6), (0.5, 0.25, 0.0, 0.25), (0.0, 0.0, 0.0, 0.0)],
                     Timbre::Bell => [(1.0, 1.0, 0.0, 1.0), (2.76, 0.5, 0.5, 0.0), (5.4, 0.25, 0.18, 0.0), (0.0, 0.0, 0.0, 0.0)],
+                    // Three slightly detuned saws: an ensemble.
+                    Timbre::Strings => [(0.997, 0.45, 0.0, 0.45), (1.003, 0.45, 0.0, 0.45), (2.0, 0.12, 0.0, 0.12), (0.0, 0.0, 0.0, 0.0)],
+                    // Nearly pure, plus breath (partial 3 is noise).
+                    Timbre::Flute => [(1.0, 1.0, 0.0, 1.0), (2.0, 0.12, 0.0, 0.12), (3.0, 0.05, 0.0, 0.05), (0.0, 0.05, 0.08, 0.015)],
+                    // Upper harmonics die first, like a string.
+                    Timbre::Guitar => [(1.0, 1.0, 1.2, 0.0), (2.0, 0.55, 0.6, 0.0), (3.0, 0.35, 0.3, 0.0), (4.0, 0.22, 0.15, 0.0)],
+                    // A bar: the fundamental and a quick, high overtone.
+                    Timbre::Marimba => [(1.0, 1.0, 0.4, 0.0), (4.0, 0.35, 0.05, 0.0), (9.9, 0.1, 0.02, 0.0), (0.0, 0.0, 0.0, 0.0)],
+                    // FM: partial 1 modulates partial 0, its level is the index; partial 2 is the tine.
+                    Timbre::ElectricPiano => [(1.0, 1.0, 0.0, 1.0), (1.0, 1.4, 0.35, 0.25), (14.0, 0.06, 0.02, 0.0), (0.0, 0.0, 0.0, 0.0)],
                 };
                 for (i, (ratio, level, tc, floor)) in partials.into_iter().enumerate() {
                     self.inc[i] = (f * ratio / sr).min(0.45);
@@ -225,11 +262,19 @@ impl Voice {
                     self.partial_floor[i] = floor;
                     self.partial_k[i] = if tc > 0.0 { glide_coef(sr, tc) } else { 1.0 };
                 }
-                if timbre == Timbre::Synth {
-                    self.freq = (f * 7.0).min(14_000.0); // filter cutoff, gliding down
-                    self.freq_end = (f * 2.2).min(9_000.0);
-                    self.freq_k = glide_coef(sr, 0.22);
-                    self.filter = Biquad::new(FilterKind::LowPass, sr, self.freq, 5.0);
+                // Filter cutoff, gliding from bright to darker.
+                let sweep = match timbre {
+                    Timbre::Synth => Some((7.0, 2.2, 0.22, 5.0)),
+                    Timbre::Guitar => Some((12.0, 3.0, 0.25, 0.9)),
+                    Timbre::Strings => Some((5.0, 4.0, 0.5, 0.7)),
+                    _ => None,
+                };
+                if let Some((from, to, tc, q)) = sweep {
+                    self.freq = (f * from).min(14_000.0);
+                    self.freq_end = (f * to).min(9_000.0);
+                    self.freq_k = glide_coef(sr, tc);
+                    self.env2 = q;
+                    self.filter = Biquad::new(FilterKind::LowPass, sr, self.freq, q);
                 }
                 self.len = u32::MAX;
             }
@@ -465,18 +510,23 @@ impl Voice {
             self.phase[i] = (self.phase[i] + self.inc[i]).fract();
             let p = self.phase[i];
             let wave = match (timbre, i) {
-                (Timbre::Piano, 0) => triangle_turns(p),
+                (Timbre::Piano, 0) | (Timbre::Guitar, 0) => triangle_turns(p),
                 (Timbre::Synth, 0) | (Timbre::Synth, 1) => saw_turns(p),
                 (Timbre::Synth, _) => square_turns(p),
+                (Timbre::Strings, _) => saw_turns(p),
+                (Timbre::Flute, 3) => self.noise.next(),
+                // The modulator is heard only through the carrier; its level (the index) still decays.
+                (Timbre::ElectricPiano, 1) => 0.0,
+                (Timbre::ElectricPiano, 0) => sin_turns(p + 0.16 * self.partial[1] * sin_turns(self.phase[1])),
                 _ => sin_turns(p),
             };
             s += wave * self.partial[i];
             self.partial[i] = self.partial_floor[i] + (self.partial[i] - self.partial_floor[i]) * self.partial_k[i];
         }
-        if timbre == Timbre::Synth {
+        if matches!(timbre, Timbre::Synth | Timbre::Guitar | Timbre::Strings) {
             if self.t % 32 == 0 {
                 self.freq = self.freq_end + (self.freq - self.freq_end) * self.freq_k.powi(32);
-                self.filter.set(FilterKind::LowPass, self.sample_rate, self.freq, 5.0);
+                self.filter.set(FilterKind::LowPass, self.sample_rate, self.freq, self.env2);
             }
             s = self.filter.process(s);
         }

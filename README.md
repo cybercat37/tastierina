@@ -8,7 +8,7 @@ interfaccia in Kotlin e Jetpack Compose.
 |---|---|---|
 | 0. Pad | Otto pad e il gioco "Tieni il tempo" | sì |
 | 0.5 Ripeti | L'app suona una frase, conta 4-3-2-1, tu la ripeti a tempo quante volte vuoi | sì |
-| 1. Tastierina | Tastiera a 18 tasti, 4 suoni, 21 canzoni guidate a pallini, Ascolta | sì |
+| 1. Tastierina | Tastiera a 18 tasti, 9 strumenti, 21 canzoni guidate, modi Impara e A tempo con stelle | sì |
 | 2. Ritmo | Batteria a 16 passi e lezioni di ritmo | in arrivo |
 | 3. Groove | Basso, melodia, registrazione dalla tastiera | in arrivo |
 | 4. Groovebox | Giri A/B/C, 1-2-4 battute, scaletta | in arrivo |

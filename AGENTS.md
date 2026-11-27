@@ -8,7 +8,7 @@ Tastierina: a groovebox for learning electronic dance music, one level at a
 time, as a native Android app.
 
 - `engine/`: the audio engine, pure Rust with no dependencies. Voices,
-  held keyboard notes in four timbres, metronome, scheduled pads and
+  held keyboard notes in nine timbres, metronome, scheduled pads and
   notes, timing judge, SPSC command queue, and
   `repeat` (level 0.5: phrase generation and evaluation), `perform`
   (level 1 "A tempo": a song judged note by note, stars). Renders without allocating,

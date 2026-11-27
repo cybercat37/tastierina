@@ -124,7 +124,10 @@ private fun TastiControls(modifier: Modifier) {
             }
         }
         Spacer(Modifier.width(10.dp))
-        s.timbreNames.forEachIndexed { i, name -> Chip(name, s.timbre == i, "Suono: $name") { s.selectTimbre(i) } }
+        s.timbreNames.forEachIndexed { i, name ->
+            val id = s.timbreIds[i]
+            Chip(name, s.timbre == id, "Suono: $name") { s.selectTimbre(id) }
+        }
         Spacer(Modifier.width(10.dp))
         Chip("−", false, "Ottava più bassa") { s.changeOctave(-1) }
         Text(

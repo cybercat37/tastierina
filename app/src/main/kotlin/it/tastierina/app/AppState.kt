@@ -120,7 +120,10 @@ object AppState {
     private var frames = 0
 
     // Tastierina
-    val timbreNames = listOf("Piano", "Organo", "Synth", "Campana")
+    /** Same order as engine::voices::Timbre. */
+    val timbreNames = listOf("Piano", "Piano el.", "Organo", "Archi", "Flauto", "Chitarra", "Marimba", "Synth", "Campana")
+    /** Engine index of each name above. */
+    val timbreIds = listOf(0, 8, 1, 4, 5, 6, 7, 2, 3)
     var timbre by mutableIntStateOf(0)
         private set
     var octave by mutableIntStateOf(0)
@@ -187,7 +190,7 @@ object AppState {
         bpm = p.getInt("bpm", 90).coerceIn(BPM_MIN, BPM_MAX)
         best = p.getInt("best", 0)
         bestRound = p.getInt("bestRound", 0)
-        timbre = p.getInt("timbre", 0).coerceIn(0, 3)
+        timbre = p.getInt("timbre", 0).takeIf { it in timbreIds } ?: 0
         octave = p.getInt("octave", 0).coerceIn(-2, 2)
         val id = p.getString("song", SONGS.first().id)
         song = SONGS.firstOrNull { it.id == id }
@@ -407,8 +410,9 @@ object AppState {
         for (i in 0 until KEY_COUNT) held[i] = 0
     }
 
+    /** [t] is an engine timbre id (see [timbreIds]). */
     fun selectTimbre(t: Int) {
-        timbre = t.coerceIn(0, 3)
+        timbre = t.takeIf { it in timbreIds } ?: 0
         save()
     }
 
