@@ -25,6 +25,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -100,13 +105,14 @@ private fun Chip(text: String, selected: Boolean, label: String, onClick: () -> 
 @Composable
 private fun TastiControls(modifier: Modifier) {
     val s = AppState
+    var showSongs by remember { mutableStateOf(false) }
+    if (showSongs) SongsDialog { showSongs = false }
     Row(
         modifier.horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Chip("Libera", s.song == null, "Suona libera, senza canzone") { s.selectSong(null) }
-        for (sg in SONGS) Chip(sg.title, s.song == sg, "Canzone guidata: ${sg.title}") { s.selectSong(sg) }
+        Chip("♪  ${s.song?.title ?: "Libera"}  ▾", s.song != null, "Scegli la canzone") { showSongs = true }
         Spacer(Modifier.width(10.dp))
         s.timbreNames.forEachIndexed { i, name -> Chip(name, s.timbre == i, "Suono: $name") { s.selectTimbre(i) } }
         Spacer(Modifier.width(10.dp))
@@ -252,5 +258,39 @@ private fun GuideDot(now: Boolean, after: Boolean, color: Color, sizeDp: Int) {
         now -> Box(m.background(color))
         after -> Box(m.border(3.dp, color, CircleShape))
         else -> Box(Modifier.size(sizeDp.dp))
+    }
+}
+
+/** Every song, grouped by difficulty; "Libera" plays without a guide. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SongsDialog(onClose: () -> Unit) {
+    val s = AppState
+    val pick = { sg: Song? ->
+        s.selectSong(sg)
+        onClose()
+    }
+    Sheet(onClose, 760.dp, "Scegli la canzone") {
+        SheetChip("Libera, senza canzone", s.song == null) { pick(null) }
+        SONG_LEVELS.forEachIndexed { i, levelName ->
+            Text(levelName, color = Color(0xFF17181A), fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                for (sg in SONGS.filter { it.level == i + 1 }) SheetChip(sg.title, s.song == sg) { pick(sg) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SheetChip(text: String, selected: Boolean, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(22.dp)
+    Box(
+        Modifier.height(44.dp).clip(shape)
+            .then(if (selected) Modifier.background(KAccent) else Modifier.background(Color.White).border(1.5.dp, Color(0xFFB9B2A4), shape))
+            .clickable(onClickLabel = text, onClick = onClick)
+            .padding(horizontal = 16.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text, color = if (selected) Color.White else Color(0xFF17181A), fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
     }
 }

@@ -595,7 +595,7 @@ private fun RoundButton(label: String, onClick: () -> Unit, content: @Composable
 }
 
 @Composable
-private fun Sheet(onClose: () -> Unit, width: Dp, title: String, content: @Composable () -> Unit) {
+internal fun Sheet(onClose: () -> Unit, width: Dp, title: String, content: @Composable () -> Unit) {
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         val screen = LocalConfiguration.current
         Column(
