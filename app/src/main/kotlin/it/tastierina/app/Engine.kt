@@ -43,10 +43,22 @@ object Engine {
     external fun nativeAllNotesOff()
     /** A note at [beat] of the running metronome, held [length] beats. */
     external fun nativeScheduleNote(midi: Int, timbre: Int, beat: Double, length: Double)
+    /** A count-in beep at [beat]; [go] for the last count. */
+    external fun nativeScheduleCount(beat: Double, go: Boolean)
     /** Drops everything scheduled and lets go of every note. */
     external fun nativeClearScheduled()
     /** Whether the metronome ticks are heard; the beat grid runs either way. */
     external fun nativeSetClick(on: Boolean)
+
+    // "A tempo": a song judged note by note on the audio clock.
+    external fun nativeTakeReset()
+    external fun nativeTakeAddNote(key: Int, beat: Double): Boolean
+    /** note index shl 8 or mark; -1 wrong hit; -2 metronome not running. */
+    external fun nativeTakeHit(key: Int, touchNanos: Long): Long
+    external fun nativeTakeExpire(nowNanos: Long): Int
+    external fun nativeTakeMark(i: Int): Int
+    external fun nativeTakeNextPending(): Int
+    external fun nativeTakeSummary(): Long
 
     /** 1 exclusive path, 0 shared, -1 closed. */
     external fun nativeIsExclusive(): Int
@@ -94,6 +106,34 @@ data class Evaluation(val results: List<NoteResult>, val extra: Int, val passed:
                 extra = ((v shr 20) and 0xFF).toInt(),
                 passed = ((v shr 28) and 1L) == 1L,
                 perfect = ((v shr 29) and 1L) == 1L,
+            )
+        }
+    }
+}
+
+/** Mirrors engine::perform::Mark. */
+enum class Mark { PENDING, ON_TIME, EARLY, LATE, MISSED }
+
+/** Mirrors engine::perform::Summary::pack. */
+data class TakeSummary(
+    val notes: Int,
+    val onTime: Int,
+    val near: Int,
+    val missed: Int,
+    val wrong: Int,
+    val stars: Int,
+    val worstKey: Int?,
+    val meanOffsetMs: Int,
+) {
+    companion object {
+        fun unpack(v: Long): TakeSummary {
+            fun b(shift: Int) = ((v shr shift) and 0xFF).toInt()
+            val worst = ((v shr 42) and 63).toInt()
+            return TakeSummary(
+                notes = b(0), onTime = b(8), near = b(16), missed = b(24), wrong = b(32),
+                stars = ((v shr 40) and 3).toInt(),
+                worstKey = if (worst == 0) null else worst - 1,
+                meanOffsetMs = ((v shr 48) and 1023).toInt() - 512,
             )
         }
     }

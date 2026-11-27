@@ -54,6 +54,9 @@ private val KGuide = Color(0xFF0A857A)
 private val KGuideOnBlack = Color(0xFF62E3D2)
 private val KInk = Color(0xFFF4F1EA)
 private val KMono = FontFamily.Monospace
+private val KGood = Color(0xFF7FD3A6)
+private val KNear = Color(0xFFF0B429)
+private val KMiss = Color(0xFFFF8A75)
 
 private const val WHITE_COUNT = 11
 private const val BLACK_HEIGHT = 0.62f
@@ -107,12 +110,19 @@ private fun TastiControls(modifier: Modifier) {
     val s = AppState
     var showSongs by remember { mutableStateOf(false) }
     if (showSongs) SongsDialog { showSongs = false }
+    s.result?.let { ResultDialog(it) }
     Row(
         modifier.horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Chip("♪  ${s.song?.title ?: "Libera"}  ▾", s.song != null, "Scegli la canzone") { showSongs = true }
+        if (s.song != null) {
+            for (m in PlayMode.entries) Chip(m.title, s.playMode == m, "Modo: ${m.title}") { s.selectPlayMode(m) }
+            if (s.playMode == PlayMode.A_TEMPO) {
+                Chip(if (s.slow) "lenta" else "normale", false, "Velocità: tocca per cambiare") { s.toggleSlow() }
+            }
+        }
         Spacer(Modifier.width(10.dp))
         s.timbreNames.forEachIndexed { i, name -> Chip(name, s.timbre == i, "Suono: $name") { s.selectTimbre(i) } }
         Spacer(Modifier.width(10.dp))
@@ -142,17 +152,34 @@ private fun SongStrip(modifier: Modifier) {
         val from = (s.songStep - 2).coerceAtLeast(0)
         val to = (from + 12).coerceAtMost(sg.notes.size)
         for (i in from until to) {
-            val now = i == s.songStep
-            val done = i < s.songStep
+            val now = i == s.songStep && !s.songDone
+            val mark = s.marks.getOrElse(i) { 0 }
+            val done = mark != 0
+            // Impara: 1 right, 2 right after errors. A tempo: Mark ordinals.
+            val markColor = when {
+                s.playMode == PlayMode.IMPARA && mark == 1 -> KGood
+                s.playMode == PlayMode.IMPARA && mark == 2 -> KNear
+                mark == Mark.ON_TIME.ordinal -> KGood
+                mark == Mark.EARLY.ordinal || mark == Mark.LATE.ordinal -> KNear
+                mark == Mark.MISSED.ordinal -> KMiss
+                else -> null
+            }
             Box(
                 Modifier.height(28.dp).clip(RoundedCornerShape(6.dp))
-                    .background(if (now) KGuide else Color(0xFF2C2E31))
+                    .background(
+                        when {
+                            now -> KGuide
+                            markColor != null -> markColor.copy(alpha = 0.28f)
+                            else -> Color(0xFF2C2E31)
+                        },
+                    )
+                    .then(if (markColor != null) Modifier.border(1.5.dp, markColor, RoundedCornerShape(6.dp)) else Modifier)
                     .padding(horizontal = 9.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     keyName(sg.notes[i].key),
-                    color = if (done) KInk.copy(alpha = 0.4f) else KInk,
+                    color = if (done) KInk.copy(alpha = 0.85f) else KInk,
                     fontSize = 15.sp,
                     fontWeight = if (now) FontWeight.ExtraBold else FontWeight.SemiBold,
                 )
@@ -171,7 +198,7 @@ private fun Keyboard(modifier: Modifier) {
     val sg = s.song
     val demo = s.demoStarts != null
     val next = if (sg != null && !s.songDone) sg.notes[s.songStep].key else -1
-    val after = if (sg != null && !demo && s.songStep + 1 < sg.notes.size) sg.notes[s.songStep + 1].key.takeIf { it != next } ?: -1 else -1
+    val after = if (sg != null && !demo && !s.takeRunning && s.songStep + 1 < sg.notes.size) sg.notes[s.songStep + 1].key.takeIf { it != next } ?: -1 else -1
 
     BoxWithConstraints(
         modifier
@@ -189,7 +216,7 @@ private fun Keyboard(modifier: Modifier) {
                             if (now != before) {
                                 before?.let { s.keyUp(it) }
                                 if (now != null) {
-                                    s.keyDown(now)
+                                    s.keyDown(now, c.uptimeMillis * 1_000_000L)
                                     view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                                     fingers[c.id] = now
                                 } else {
@@ -275,7 +302,11 @@ private fun SongsDialog(onClose: () -> Unit) {
         SONG_LEVELS.forEachIndexed { i, levelName ->
             Text(levelName, color = Color(0xFF17181A), fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                for (sg in SONGS.filter { it.level == i + 1 }) SheetChip(sg.title, s.song == sg) { pick(sg) }
+                for (sg in SONGS.filter { it.level == i + 1 }) {
+                    val best = PlayMode.entries.maxOf { s.bestStars(sg, it) }
+                    val stars = if (best >= 0) "  " + "★".repeat(best) + "☆".repeat(3 - best) else ""
+                    SheetChip(sg.title + stars, s.song == sg) { pick(sg) }
+                }
             }
         }
     }
@@ -292,5 +323,63 @@ private fun SheetChip(text: String, selected: Boolean, onClick: () -> Unit) {
         contentAlignment = Alignment.Center,
     ) {
         Text(text, color = if (selected) Color.White else Color(0xFF17181A), fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+/** How the song went: stars, counts, and one piece of advice. */
+@Composable
+private fun ResultDialog(r: PlayResult) {
+    val s = AppState
+    val dark = Color(0xFF17181A)
+    val muted = Color(0xFF3F464B)
+    Sheet({ s.dismissResult() }, 560.dp, r.song.title) {
+        Text(
+            "★".repeat(r.stars) + "☆".repeat(3 - r.stars),
+            color = KAccent, fontSize = 44.sp, letterSpacing = 4.sp,
+        )
+        Text(
+            if (r.stars >= r.best && r.stars > 0) "${r.mode.title} · nuovo record!" else "${r.mode.title} · record " + "★".repeat(r.best.coerceAtLeast(0)),
+            color = muted, fontSize = 15.sp,
+        )
+        val lines = buildList {
+            if (r.mode == PlayMode.A_TEMPO) {
+                add("A tempo" to "${r.onTime} su ${r.notes}")
+                if (r.near > 0) add("Un po' presto o tardi" to "${r.near}")
+                if (r.missed > 0) add("Mancate" to "${r.missed}")
+            } else {
+                add("Giuste al primo colpo" to "${r.onTime} su ${r.notes}")
+            }
+            add("Tasti sbagliati" to "${r.wrong}")
+        }
+        lines.forEach { (k, v) ->
+            Row(Modifier.fillMaxWidth()) {
+                Text(k, color = dark, fontSize = 16.sp, modifier = Modifier.weight(1f))
+                Text(v, color = dark, fontSize = 16.sp, fontWeight = FontWeight.Bold, fontFamily = KMono)
+            }
+        }
+        Text(advice(r), color = dark, fontSize = 16.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            SheetChip("Riprova", true) {
+                s.dismissResult()
+                if (r.mode == PlayMode.A_TEMPO) s.startTake() else s.selectSong(r.song)
+            }
+            SheetChip("Chiudi", false) { s.dismissResult() }
+        }
+    }
+}
+
+private fun advice(r: PlayResult): String {
+    val played = r.onTime + r.near
+    return when {
+        r.mode == PlayMode.A_TEMPO && played >= 4 && r.meanOffsetMs <= -25 ->
+            "Tendi ad anticipare di circa ${-r.meanOffsetMs} ms: aspetta il click."
+        r.mode == PlayMode.A_TEMPO && played >= 4 && r.meanOffsetMs >= 25 ->
+            "Tendi a ritardare di circa ${r.meanOffsetMs} ms: segui il click e parti un attimo prima."
+        r.mode == PlayMode.A_TEMPO && r.missed * 4 > r.notes ->
+            "Molte note mancate: prova la velocità lenta, o prima in modo Impara."
+        r.worstKey != null -> "Occhio al ${keyName(r.worstKey)}: è lì che sbagli di più."
+        r.stars == 3 && r.mode == PlayMode.IMPARA -> "Nessun errore: ora prova in modo A tempo!"
+        r.stars == 3 -> "Ottimo controllo del tempo."
+        else -> "Riprova: ogni volta va un po' meglio."
     }
 }

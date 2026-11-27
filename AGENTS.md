@@ -10,7 +10,8 @@ time, as a native Android app.
 - `engine/`: the audio engine, pure Rust with no dependencies. Voices,
   held keyboard notes in four timbres, metronome, scheduled pads and
   notes, timing judge, SPSC command queue, and
-  `repeat` (level 0.5: phrase generation and evaluation). Renders without allocating,
+  `repeat` (level 0.5: phrase generation and evaluation), `perform`
+  (level 1 "A tempo": a song judged note by note, stars). Renders without allocating,
   locking or blocking.
 - `engine-android/`: `libtastierina.so`. Hand-written AAudio binding and the
   JNI functions behind `it.tastierina.app.Engine`. Empty on other platforms.

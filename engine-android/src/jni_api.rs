@@ -8,6 +8,7 @@ use std::ffi::c_void;
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 
+use engine::perform::{HitOutcome, Take};
 use engine::repeat::{evaluate, hits_in_bar, make_phrase, Phrase};
 use engine::timing::{heard_frame, judge};
 use engine::Command;
@@ -285,5 +286,82 @@ pub extern "system" fn Java_it_tastierina_app_Engine_nativeClearScheduled(_env: 
 pub extern "system" fn Java_it_tastierina_app_Engine_nativeSetClick(_env: JEnv, _this: JObj, on: JBoolean) {
     with_output((), |o| {
         o.control.send(Command::Click(on != 0));
+    })
+}
+
+// ---- "A tempo" (level 1): a song judged note by note ---------------------
+
+static TAKE: Mutex<Option<Take>> = Mutex::new(None);
+
+/// The beat heard at `nanos` and the beat length in ms, if the metronome runs.
+fn heard_beat(nanos: i64) -> Option<(f64, f64)> {
+    with_output(None, |o| {
+        o.control.shared.grid().map(|g| {
+            let frame = heard_frame(o.presentation(nanos), nanos, o.sample_rate);
+            (g.position(frame), g.frames_per_beat / o.sample_rate * 1000.0)
+        })
+    })
+}
+
+fn with_take<R>(default: R, f: impl FnOnce(&mut Take) -> R) -> R {
+    match TAKE.lock() {
+        Ok(mut guard) => f(guard.get_or_insert_with(Take::default)),
+        Err(_) => default,
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeTakeReset(_env: JEnv, _this: JObj) {
+    with_take((), |t| t.reset())
+}
+
+/// Adds an expected note: `key` of the 18, at `beat` of the metronome grid.
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeTakeAddNote(_env: JEnv, _this: JObj, key: i32, beat: f64) -> JBoolean {
+    with_take(0, |t| t.add_note(key.clamp(0, 255) as u8, beat) as JBoolean)
+}
+
+/// A key played at `touch_nanos`. Returns note index << 8 | mark, -1 for a
+/// wrong hit, -2 when the metronome is not running.
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeTakeHit(_env: JEnv, _this: JObj, key: i32, touch_nanos: i64) -> i64 {
+    // OUTPUT is released before TAKE is taken.
+    let Some((beat, ms_per_beat)) = heard_beat(touch_nanos) else { return -2 };
+    with_take(-2, |t| match t.hit(key.clamp(0, 255) as u8, beat, ms_per_beat) {
+        HitOutcome::Note { index, mark } => ((index as i64) << 8) | mark as i64,
+        HitOutcome::Wrong => -1,
+    })
+}
+
+/// Marks the notes whose window closed by `now_nanos` as missed; returns how many.
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeTakeExpire(_env: JEnv, _this: JObj, now_nanos: i64) -> i32 {
+    let Some((beat, ms_per_beat)) = heard_beat(now_nanos) else { return 0 };
+    with_take(0, |t| t.expire(beat, ms_per_beat) as i32)
+}
+
+/// Mark of note `i`: 0 pending, 1 on time, 2 early, 3 late, 4 missed.
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeTakeMark(_env: JEnv, _this: JObj, i: i32) -> i32 {
+    with_take(0, |t| t.mark(i.max(0) as usize) as i32)
+}
+
+/// First note still to play, or -1 when the take is over.
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeTakeNextPending(_env: JEnv, _this: JObj) -> i32 {
+    with_take(-1, |t| t.next_pending().map_or(-1, |i| i as i32))
+}
+
+/// engine::perform::Summary::pack.
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeTakeSummary(_env: JEnv, _this: JObj) -> i64 {
+    with_take(0, |t| t.summary().pack())
+}
+
+/// A count-in beep at `beat` of the running metronome (`go` for the last count).
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeScheduleCount(_env: JEnv, _this: JObj, beat: f64, go: JBoolean) {
+    with_output((), |o| {
+        o.control.send(Command::ScheduleCount { beat, go: go != 0 });
     })
 }

@@ -16,6 +16,23 @@ enum class Level(val number: String, val title: String) {
     TASTI("1", "Tastierina"),
 }
 
+enum class PlayMode(val title: String) { IMPARA("Impara"), A_TEMPO("A tempo") }
+
+/** How a song went: shown in a window at the end, kept as a record per song and mode. */
+data class PlayResult(
+    val song: Song,
+    val mode: PlayMode,
+    val stars: Int,
+    val best: Int,
+    val notes: Int,
+    val onTime: Int,
+    val near: Int,
+    val missed: Int,
+    val wrong: Int,
+    val meanOffsetMs: Int,
+    val worstKey: Int?,
+)
+
 /** Where a "Ripeti" round is, from the beat being heard. */
 enum class RipetiPhase { COUNT_IN, LISTEN, COUNT, YOUR_TURN }
 
@@ -124,7 +141,28 @@ object AppState {
         private set
     private var demoEnd = 0.0
 
-    val metronomeRunning: Boolean get() = tempo || level == Level.RIPETI || demoStarts != null
+    var playMode by mutableStateOf(PlayMode.IMPARA)
+        private set
+    /** "A tempo" at 70% of the song's tempo. */
+    var slow by mutableStateOf(true)
+        private set
+    /** Per note of the song: 0 waiting; Impara 1 right, 2 right after errors; A tempo a [Mark] ordinal. */
+    val marks = mutableStateListOf<Int>()
+    var errors by mutableIntStateOf(0)
+        private set
+    var rightNotes by mutableIntStateOf(0)
+        private set
+    private val wrongByKey = IntArray(KEY_COUNT)
+    private var stepErrors = 0
+    /** "A tempo" in progress. */
+    var takeRunning by mutableStateOf(false)
+        private set
+    /** Beat of the first note of a take: after a bar of 4-3-2-1. */
+    val takeFirstBeat = 4.0
+    var result by mutableStateOf<PlayResult?>(null)
+        private set
+
+    val metronomeRunning: Boolean get() = tempo || level == Level.RIPETI || demoStarts != null || takeRunning
 
     /** Beats since the start of the current Ripeti round, or NaN. */
     val ripetiBeat: Double get() = beatPosition - roundStart
@@ -154,7 +192,12 @@ object AppState {
         val id = p.getString("song", SONGS.first().id)
         song = SONGS.firstOrNull { it.id == id }
         level = Level.entries.getOrNull(p.getInt("level", 0)) ?: Level.PAD
+        playMode = PlayMode.entries.getOrNull(p.getInt("playMode", 0)) ?: PlayMode.IMPARA
+        slow = p.getBoolean("slow", true)
+        resetMarks()
     }
+
+    fun bestStars(sg: Song, mode: PlayMode): Int = prefs?.getInt("stars_${sg.id}_${mode.name}", -1) ?: -1
 
     private fun save() {
         prefs?.edit()
@@ -166,6 +209,8 @@ object AppState {
             ?.putInt("octave", octave)
             ?.putString("song", song?.id ?: "")
             ?.putInt("level", level.ordinal)
+            ?.putInt("playMode", playMode.ordinal)
+            ?.putBoolean("slow", slow)
             ?.apply()
     }
 
@@ -179,6 +224,7 @@ object AppState {
 
     fun stopAudio() {
         // A new stream starts clean: nothing held, nothing playing by itself.
+        takeRunning = false
         demoStarts = null
         demoKey = -1
         for (i in 0 until KEY_COUNT) held[i] = 0
@@ -192,6 +238,7 @@ object AppState {
         beatPosition = pos
         if (level == Level.RIPETI && !pos.isNaN()) followRipeti(pos)
         if (demoStarts != null && !pos.isNaN()) followDemo(pos)
+        if (takeRunning && !pos.isNaN()) followTake()
         previousPosition = pos
         frames++
         if (frames % 30 == 0 && Engine.nativeNeedsRestart()) {
@@ -336,12 +383,16 @@ object AppState {
 
     private fun midiOf(key: Int) = 60 + 12 * octave + key
 
-    fun keyDown(key: Int) {
+    fun keyDown(key: Int, touchNanos: Long = System.nanoTime()) {
         if (key !in 0 until KEY_COUNT) return
         held[key] = held[key] + 1
         if (held[key] == 1) {
             Engine.nativeNoteOn(midiOf(key), timbre, 0.9f)
-            followSong(key)
+            when {
+                takeRunning -> takeHit(key, touchNanos)
+                playMode == PlayMode.IMPARA -> followSong(key)
+                else -> {} // A tempo, before Via!: free playing
+            }
         }
     }
 
@@ -371,28 +422,152 @@ object AppState {
 
     fun selectSong(s: Song?) {
         stopDemo()
+        stopTake()
         song = s
-        songStep = 0
-        songDone = false
+        restartSong()
         save()
     }
 
-    /** The song waits for you: the dot moves on only with the right key. */
+    fun selectPlayMode(m: PlayMode) {
+        if (m == playMode) return
+        stopDemo()
+        stopTake()
+        playMode = m
+        restartSong()
+        save()
+    }
+
+    fun toggleSlow() {
+        slow = !slow
+        save()
+    }
+
+    private fun resetMarks() {
+        marks.clear()
+        repeat(song?.notes?.size ?: 0) { marks.add(0) }
+        errors = 0
+        rightNotes = 0
+        stepErrors = 0
+        wrongByKey.fill(0)
+    }
+
+    private fun restartSong() {
+        songStep = 0
+        songDone = false
+        resetMarks()
+    }
+
+    fun dismissResult() {
+        result = null
+    }
+
+    /** Saves the stars if they beat the record, and shows the result window. */
+    private fun finish(sg: Song, mode: PlayMode, s: TakeSummary) {
+        val key = "stars_${sg.id}_${mode.name}"
+        val before = prefs?.getInt(key, -1) ?: -1
+        if (s.stars > before) prefs?.edit()?.putInt(key, s.stars)?.apply()
+        result = PlayResult(
+            sg, mode, s.stars, maxOf(before, s.stars), s.notes, s.onTime, s.near, s.missed, s.wrong, s.meanOffsetMs, s.worstKey,
+        )
+    }
+
+    /** Impara: the song waits; the dot moves on only with the right key. Wrong keys are counted. */
     private fun followSong(key: Int) {
         val sg = song ?: return
         if (demoStarts != null) return
-        songDone = false
-        if (key != sg.notes[songStep].key) return
+        if (songDone) restartSong()
+        val expected = sg.notes[songStep].key
+        if (key != expected) {
+            errors += 1
+            stepErrors += 1
+            wrongByKey[expected] += 1
+            return
+        }
+        marks[songStep] = if (stepErrors == 0) 1 else 2
+        if (stepErrors == 0) rightNotes += 1
+        stepErrors = 0
         songStep += 1
         if (songStep >= sg.notes.size) {
-            songStep = 0
+            songStep = sg.notes.size - 1
             songDone = true
+            val n = sg.notes.size
+            val ratio = errors.toDouble() / n
+            val stars = when {
+                errors == 0 -> 3
+                ratio <= 0.1 -> 2
+                ratio <= 0.3 -> 1
+                else -> 0
+            }
+            val worst = wrongByKey.indices.maxByOrNull { wrongByKey[it] }?.takeIf { wrongByKey[it] >= 2 }
+            finish(sg, PlayMode.IMPARA, TakeSummary(n, rightNotes, 0, 0, errors, stars, worst, 0))
+        }
+    }
+
+    // ---- A tempo -------------------------------------------------------------
+
+    /** Starts the metronome, counts 4-3-2-1 and expects every note on its beat. */
+    fun startTake() {
+        val sg = song ?: return
+        stopDemo()
+        releaseAllKeys()
+        restartSong()
+        result = null
+        val speed = if (slow) 0.7f else 1f
+        val tempo = (sg.bpm * speed).coerceIn(40f, 180f)
+        Engine.nativeClearScheduled()
+        Engine.nativeSetMetronome(false, tempo)
+        Engine.nativeSetClick(true)
+        Engine.nativeSetMetronome(true, tempo)
+        // The bar before the first note counts 4, 3, 2, 1 with its own beep.
+        for (k in 0 until 4) Engine.nativeScheduleCount(k.toDouble(), k == 3)
+        Engine.nativeTakeReset()
+        var t = takeFirstBeat
+        for (n in sg.notes) {
+            Engine.nativeTakeAddNote(n.key, t)
+            t += n.beats
+        }
+        takeRunning = true
+    }
+
+    fun stopTake() {
+        if (!takeRunning) return
+        takeRunning = false
+        Engine.nativeClearScheduled()
+        Engine.nativeSetMetronome(false, bpm.toFloat())
+    }
+
+    private fun takeHit(key: Int, touchNanos: Long) {
+        val r = Engine.nativeTakeHit(key, touchNanos)
+        when {
+            r >= 0 -> {
+                val i = (r shr 8).toInt()
+                if (i in marks.indices) marks[i] = (r and 0xFF).toInt()
+                rightNotes += 1
+            }
+            r == -1L -> errors += 1
+        }
+    }
+
+    private fun followTake() {
+        val sg = song ?: return
+        if (Engine.nativeTakeExpire(System.nanoTime()) > 0) {
+            for (i in marks.indices) marks[i] = Engine.nativeTakeMark(i)
+        }
+        val next = Engine.nativeTakeNextPending()
+        if (next >= 0) {
+            songStep = next
+        } else {
+            takeRunning = false
+            Engine.nativeSetMetronome(false, bpm.toFloat())
+            songDone = true
+            finish(sg, PlayMode.A_TEMPO, TakeSummary.unpack(Engine.nativeTakeSummary()))
         }
     }
 
     /** "Ascolta": the engine plays the whole song on the beat grid, with the click muted. */
     fun startDemo() {
         val sg = song ?: return
+        stopTake()
         releaseAllKeys()
         Engine.nativeClearScheduled()
         Engine.nativeSetMetronome(false, sg.bpm.toFloat())
@@ -435,6 +610,7 @@ object AppState {
 
     private fun leaveKeyboard() {
         stopDemo()
+        stopTake()
         releaseAllKeys()
     }
 }

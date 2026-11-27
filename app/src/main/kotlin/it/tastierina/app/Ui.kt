@@ -161,7 +161,17 @@ private fun TopBar(onLevels: () -> Unit, onSound: () -> Unit, onHelp: () -> Unit
             }
         }
         if (s.level == Level.TASTI) {
-            if (s.song != null) {
+            if (s.song != null && s.playMode == PlayMode.A_TEMPO) {
+                Pill(
+                    dark = false,
+                    filled = true,
+                    label = if (s.takeRunning) "Ferma la prova" else "Inizia la prova a tempo",
+                    onClick = { if (s.takeRunning) s.stopTake() else s.startTake() },
+                ) {
+                    Text(if (s.takeRunning) "Ferma" else "Via!", color = C.ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+            if (s.song != null && !s.takeRunning) {
                 val playing = s.demoStarts != null
                 Pill(
                     dark = false,
@@ -208,11 +218,16 @@ private fun Lcd(modifier: Modifier) {
         !s.audioOk -> "audio non disponibile: riapri l'app"
         s.level == Level.TASTI -> {
             val sg = s.song
+            val errs = if (s.errors > 0) " · ${if (s.errors == 1) "1 errore" else "${s.errors} errori"}" else ""
             when {
                 sg == null -> "suona libera"
                 s.demoStarts != null -> "ascolta: ${keyName(sg.notes[s.songStep].key)}  ${s.songStep + 1}/${sg.notes.size}"
-                s.songDone -> "BRAVO! ${sg.title} finita: si ricomincia"
-                else -> "premi ${keyName(sg.notes[s.songStep].key)}  ${s.songStep + 1}/${sg.notes.size}"
+                s.takeRunning && !s.beatPosition.isNaN() && s.beatPosition < s.takeFirstBeat ->
+                    "pronti: " + (4 - floor(s.beatPosition.coerceAtLeast(0.0)).toInt()).coerceIn(1, 4)
+                s.takeRunning -> "a tempo: ${s.rightNotes} giuste$errs"
+                s.playMode == PlayMode.A_TEMPO && !s.songDone -> "premi Via! per suonare a tempo"
+                s.songDone -> "finita!$errs"
+                else -> "premi ${keyName(sg.notes[s.songStep].key)}  ${s.songStep + 1}/${sg.notes.size}$errs"
             }
         }
         s.level == Level.RIPETI -> when {
@@ -707,6 +722,7 @@ private fun HelpDialog(onClose: () -> Unit) {
         "Pad" to "Tocca un pad per sentirlo. Puoi usare più dita insieme.",
         "Tieni il tempo" to "Parte il battito: tocca la Cassa su ogni colpo. Il pannello a destra dice se eri a tempo, oppure quanto prima o dopo il battito.",
         "Ripeti" to "Livello 0.5: ascolta la frase, aspetta il conto 4, 3, 2, 1 e ripetila a tempo, battuta dopo battuta, quante volte vuoi. La prima nota cade proprio dopo l'1. Ogni battuta ha il suo esito. Risenti la fa riascoltare, Prossima passa a una frase nuova, più lunga se almeno una battuta era giusta.",
+        "Impara / A tempo" to "In Impara la canzone ti aspetta e conta i tasti sbagliati. In A tempo parte il metronomo con il conto 4, 3, 2, 1 e ogni nota va suonata al momento giusto: la striscia la colora verde a tempo, gialla presto o tardi, rossa mancata. Alla fine arrivano le stelle e un consiglio.",
         "Tastierina" to "Livello 1: 18 tasti da suonare con più dita, anche trascinando. Scegli una canzone: il pallino pieno è il tasto da premere, il cerchietto quello dopo, e la canzone ti aspetta. Ascolta la fa sentire intera.",
         "− BPM +" to "Cambia la velocità del battito, anche mentre suona.",
         "Livello" to "Da qui si sale di livello, man mano che arrivano.",

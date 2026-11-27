@@ -6,6 +6,7 @@
 //! from a fixed pool.
 
 pub mod dsp;
+pub mod perform;
 pub mod repeat;
 pub mod spsc;
 pub mod timing;
