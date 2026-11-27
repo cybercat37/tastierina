@@ -6,8 +6,8 @@ val DRUM_SOUNDS = listOf(
     "Rimshot", "Shaker", "Ride", "Crash", "Conga", "Clave", "Tamburello", "Cassa 808",
 )
 const val DRUM_STEPS = 16
-/** Rows shown at most at once: they must fit the screen with the keys of a phone. */
-const val MAX_ROWS = 8
+/** Every sound can be a row: the grid scrolls when they do not all fit. */
+const val MAX_ROWS = 16
 val DEFAULT_ROWS = listOf(0, 1, 2, 3, 4)
 
 private const val CASSA = 0

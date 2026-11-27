@@ -23,6 +23,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.verticalScroll
+import kotlin.math.abs
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -103,9 +108,26 @@ private fun RitmoControls(modifier: Modifier) {
     }
 }
 
+private val MIN_ROW = 34.dp
+private val ROW_GAP = 5.dp
+private const val UNDECIDED = 0
+private const val PAINT = 1
+private const val SCROLL = 2
+
+/** One finger on the grid, from touch to lift. */
+private class Stroke(val track: Int, val step: Int, val on: Boolean, val x0: Float, val y0: Float) {
+    var mode = UNDECIDED
+    var lastY = y0
+}
+
+/** Row height in pixels: rows share the height, but never go under the minimum (then the grid scrolls). */
+private fun rowPixels(height: Int, rows: Int, minRow: Int, gap: Int): Int =
+    maxOf(minRow, (height - gap * (rows - 1)) / rows.coerceAtLeast(1))
+
 /**
- * Five rows of sixteen steps. A tap turns a step on or off; dragging along a
- * row paints every step it crosses the same way as the first one.
+ * A row of sixteen steps per sound. A tap turns a step on or off; a sideways
+ * drag paints every step it crosses the same way as the first; an up-and-down
+ * drag scrolls the rows. A tap on a row's name plays its sound.
  */
 @Composable
 private fun DrumGrid(modifier: Modifier) {
@@ -113,39 +135,63 @@ private fun DrumGrid(modifier: Modifier) {
     val view = LocalView.current
     val density = LocalDensity.current
     val labelPx = with(density) { LABEL_WIDTH.toPx() }
-    // Per finger: the row it started on and whether it turns steps on or off.
-    val strokes = remember { HashMap<PointerId, Pair<Int, Boolean>>() }
-    val state = s.lessonNow
-    val working = state as? LessonState.Working
+    val gapPx = with(density) { ROW_GAP.roundToPx() }
+    val minRowPx = with(density) { MIN_ROW.roundToPx() }
+    val scroll = rememberScrollState()
+    val strokes = remember { HashMap<PointerId, Stroke>() }
+    val working = s.lessonNow as? LessonState.Working
     val head = s.drumStep
 
-    Box(
+    BoxWithConstraints(
         modifier.clip(RoundedCornerShape(12.dp)).background(DWell).padding(10.dp)
             .pointerInput(Unit) {
+                val slop = viewConfiguration.touchSlop
                 awaitPointerEventScope {
                     while (true) {
                         val event = awaitPointerEvent()
                         for (c in event.changes) {
-                            val rows = s.rows.size
-                            val row = (c.position.y / size.height * rows).toInt()
+                            val rowPx = rowPixels(size.height, s.rows.size, minRowPx, gapPx)
+                            val row = ((c.position.y + scroll.value) / (rowPx + gapPx)).toInt()
                             val track = s.rows.getOrElse(row) { -1 }
                             val x = c.position.x - labelPx
                             val step = (x / (size.width - labelPx) * DRUM_STEPS).toInt()
-                            val inside = track >= 0 && x >= 0 && step in 0 until DRUM_STEPS
+                            val onCell = x >= 0 && step in 0 until DRUM_STEPS
+                            val stroke = strokes[c.id]
                             if (!c.pressed) {
-                                strokes.remove(c.id)
-                            } else if (c.previousPressed.not()) {
-                                if (inside) {
-                                    val on = !s.isOn(track, step)
-                                    strokes[c.id] = track to on
-                                    s.setStep(track, step, on)
-                                    view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                                } else if (track >= 0 && x < 0) {
-                                    s.previewDrum(track) // a tap on the row's name plays its sound
+                                // Lifted without dragging: a tap.
+                                if (stroke != null && stroke.mode == UNDECIDED) {
+                                    if (stroke.step >= 0) {
+                                        s.setStep(stroke.track, stroke.step, stroke.on)
+                                        view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                    } else {
+                                        s.previewDrum(stroke.track)
+                                    }
                                 }
-                            } else {
-                                val stroke = strokes[c.id]
-                                if (stroke != null && step in 0 until DRUM_STEPS && x >= 0) s.setStep(stroke.first, step, stroke.second)
+                                strokes.remove(c.id)
+                            } else if (!c.previousPressed) {
+                                if (track >= 0 && c.position.y >= 0) {
+                                    strokes[c.id] = Stroke(
+                                        track, if (onCell) step else -1, onCell && !s.isOn(track, step), c.position.x, c.position.y,
+                                    )
+                                }
+                            } else if (stroke != null) {
+                                if (stroke.mode == UNDECIDED) {
+                                    val dx = abs(c.position.x - stroke.x0)
+                                    val dy = abs(c.position.y - stroke.y0)
+                                    if (dy > slop && dy >= dx) {
+                                        stroke.mode = SCROLL
+                                    } else if (dx > slop) {
+                                        // Sideways on the cells paints; on the names there is nothing to paint.
+                                        stroke.mode = if (stroke.step >= 0) PAINT else SCROLL
+                                        if (stroke.mode == PAINT) {
+                                            s.setStep(stroke.track, stroke.step, stroke.on)
+                                            view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                        }
+                                    }
+                                }
+                                if (stroke.mode == PAINT && onCell) s.setStep(stroke.track, step, stroke.on)
+                                if (stroke.mode == SCROLL) scroll.dispatchRawDelta(stroke.lastY - c.position.y)
+                                stroke.lastY = c.position.y
                             }
                             c.consume()
                         }
@@ -153,38 +199,72 @@ private fun DrumGrid(modifier: Modifier) {
                 }
             },
     ) {
-        Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(if (s.rows.size > 5) 4.dp else 6.dp)) {
+        val viewport = constraints.maxHeight
+        val count = s.rows.size
+        val rowPx = rowPixels(viewport, count, minRowPx, gapPx)
+        val rowDp = with(density) { rowPx.toDp() }
+        val gapDp = with(density) { gapPx.toDp() }
+
+        // A lesson that moves to a row out of sight brings it into view.
+        val focusTrack = working?.stage?.track
+        LaunchedEffect(focusTrack, count, viewport) {
+            val index = if (focusTrack != null) s.rows.indexOf(focusTrack) else -1
+            if (index >= 0) {
+                val top = index * (rowPx + gapPx)
+                if (top < scroll.value || top + rowPx > scroll.value + viewport) {
+                    scroll.animateScrollTo((top - (viewport - rowPx) / 2).coerceAtLeast(0))
+                }
+            }
+        }
+
+        Column(
+            Modifier.fillMaxSize().verticalScroll(scroll, enabled = false),
+            verticalArrangement = Arrangement.spacedBy(gapDp),
+        ) {
             for (t in s.rows) {
                 val name = DRUM_SOUNDS[t]
-                val focus = working?.stage?.track == t
-                Row(Modifier.weight(1f).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                val focus = focusTrack == t
+                Row(Modifier.fillMaxWidth().height(rowDp), verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         name,
                         color = if (focus) DGuide else DInk,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
+                        maxLines = 1,
                         modifier = Modifier.width(LABEL_WIDTH),
                     )
                     Row(Modifier.weight(1f).fillMaxHeight(), horizontalArrangement = Arrangement.spacedBy(CELL_GAP)) {
                         for (step in 0 until DRUM_STEPS) {
                             if (step > 0 && step % 4 == 0) Spacer(Modifier.width(BEAT_GAP - CELL_GAP))
-                            val on = s.isOn(t, step)
-                            val want = focus && working != null && step in working.missing
-                            val extra = focus && working != null && step in working.extra
                             Cell(
                                 Modifier.weight(1f).fillMaxHeight(),
-                                on = on,
+                                on = s.isOn(t, step),
                                 color = DRUM_COLORS[t],
                                 beat = step % 4 == 0,
                                 playing = step == head,
-                                want = want,
-                                extra = extra,
+                                want = focus && working != null && step in working.missing,
+                                extra = focus && working != null && step in working.extra,
                                 label = "$name, casella ${step + 1}",
                             )
                         }
                     }
                 }
             }
+        }
+
+        // A thin bar on the right shows there is more above or below.
+        val max = scroll.maxValue
+        if (max in 1 until Int.MAX_VALUE) {
+            val thumb = viewport.toFloat() * viewport / (viewport + max)
+            val top = (viewport - thumb) * scroll.value / max
+            Box(
+                Modifier.align(Alignment.TopEnd)
+                    .offset(x = 7.dp, y = with(density) { top.toDp() })
+                    .width(4.dp)
+                    .height(with(density) { thumb.toDp() })
+                    .clip(CircleShape)
+                    .background(DInk.copy(alpha = 0.6f)),
+            )
         }
     }
 }
@@ -283,16 +363,20 @@ private fun LessonsDialog(onClose: () -> Unit) {
     }
 }
 
-/** Which sounds are rows of the grid: up to MAX_ROWS at once. */
+/** Which sounds are rows of the grid: all of them, the basic five, or a choice. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SoundsDialog(onClose: () -> Unit) {
     val s = AppState
     Sheet(onClose, 760.dp, "Suoni della griglia") {
         Text(
-            "Tocca un suono per aggiungerlo o toglierlo: al massimo $MAX_ROWS righe insieme. Togliendo una riga si spengono le sue caselle.",
+            "Tocca un suono per aggiungerlo o toglierlo. La griglia scorre in verticale quando le righe non ci stanno tutte. Togliendo una riga si spengono le sue caselle.",
             color = Color(0xFF3F464B), fontSize = 15.sp, lineHeight = 21.sp,
         )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            LightChip("Tutti i suoni", s.rows.size == DRUM_SOUNDS.size) { s.showAllRows() }
+            LightChip("Solo i suoni base", false) { s.showBaseRows() }
+        }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             DRUM_SOUNDS.forEachIndexed { id, name ->
                 val on = id in s.rows

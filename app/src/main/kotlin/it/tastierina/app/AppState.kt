@@ -169,7 +169,7 @@ object AppState {
     // Ritmo
     /** One bitmask per drum sound (by engine id): bit s is step s. */
     val pattern = mutableStateListOf<Int>().apply { repeat(DRUM_SOUNDS.size) { add(0) } }
-    /** Sounds shown as rows, in id order, at most [MAX_ROWS]. */
+    /** Sounds shown as rows, in id order. */
     val rows = mutableStateListOf<Int>().apply { addAll(DEFAULT_ROWS) }
     /** Lessons finished at least once. */
     val lessonsDone = mutableStateListOf<String>()
@@ -224,9 +224,11 @@ object AppState {
         p.getString("pattern", null)?.split(',')?.forEachIndexed { i, v ->
             if (i < pattern.size) pattern[i] = v.toIntOrNull() ?: 0
         }
-        p.getString("rows", null)?.split(',')?.mapNotNull { it.toIntOrNull() }
-            ?.filter { it in DRUM_SOUNDS.indices }?.distinct()?.take(MAX_ROWS)
-            ?.takeIf { it.isNotEmpty() }?.let { rows.clear(); rows.addAll(it.sorted()) }
+        // Since the grid scrolls, every sound is a row unless the player chose otherwise.
+        val savedRows = p.getString("rows2", null)?.split(',')?.mapNotNull { it.toIntOrNull() }
+            ?.filter { it in DRUM_SOUNDS.indices }?.distinct()?.takeIf { it.isNotEmpty() }
+        rows.clear()
+        rows.addAll((savedRows ?: DRUM_SOUNDS.indices.toList()).sorted())
         p.getString("lessonsDone", "")?.split(',')?.filter { it.isNotBlank() }?.let { lessonsDone.addAll(it) }
         resetMarks()
     }
@@ -248,7 +250,7 @@ object AppState {
             ?.putInt("drumBpm", drumBpm)
             ?.putString("lesson", lesson?.id ?: "")
             ?.putString("pattern", pattern.joinToString(","))
-            ?.putString("rows", rows.joinToString(","))
+            ?.putString("rows2", rows.joinToString(","))
             ?.putString("lessonsDone", lessonsDone.joinToString(","))
             ?.apply()
     }
@@ -692,6 +694,28 @@ object AppState {
             rows.sort()
             Engine.nativeDrum(id)
         }
+        save()
+    }
+
+    fun showAllRows() {
+        forgetCleared()
+        rows.clear()
+        rows.addAll(DRUM_SOUNDS.indices)
+        save()
+    }
+
+    /** The five basic sounds, plus what the lesson in use needs. Hidden rows lose their steps. */
+    fun showBaseRows() {
+        forgetCleared()
+        val keep = (DEFAULT_ROWS + (lesson?.sounds ?: emptyList())).distinct().sorted()
+        for (id in DRUM_SOUNDS.indices) {
+            if (id !in keep && pattern[id] != 0) {
+                pattern[id] = 0
+                Engine.nativeSetPattern(id, 0)
+            }
+        }
+        rows.clear()
+        rows.addAll(keep)
         save()
     }
 

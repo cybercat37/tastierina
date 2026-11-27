@@ -826,7 +826,8 @@ private fun HelpDialog(onClose: () -> Unit) {
         Level.RITMO -> listOf(
             "Griglia" to "Una riga per suono, 16 caselle per battuta. Tocca per accendere o spegnere, trascina lungo la riga per accenderne tante. Tocca il nome di una riga per sentire il suono.",
             "Lezione" to "Sceglie un ritmo da costruire: pallini verdi sulle caselle da accendere, cerchietti su quelle da spegnere, una riga alla volta.",
-            "Suoni" to "Sceglie quali suoni sono righe della griglia, fino a 8.",
+            "Scorrere" to "Trascina su e giù per vedere gli altri suoni: la barretta a destra mostra dove sei.",
+            "Suoni" to "Sceglie quali suoni sono righe della griglia: tutti, solo quelli base, o i tuoi.",
             "Svuota" to "Spegne tutto. Subito dopo diventa Annulla, se ci ripensi.",
         )
     } + listOf(
