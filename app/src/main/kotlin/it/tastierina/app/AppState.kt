@@ -674,7 +674,7 @@ object AppState {
         lesson = l
         if (l != null) {
             clearPattern()
-            setDrumBpm(l.bpm)
+            applyDrumBpm(l.bpm)
         }
         save()
     }
@@ -697,9 +697,9 @@ object AppState {
         Engine.nativeSetClick(true)
     }
 
-    fun changeDrumBpm(delta: Int) = setDrumBpm(drumBpm + delta)
+    fun changeDrumBpm(delta: Int) = applyDrumBpm(drumBpm + delta)
 
-    private fun setDrumBpm(v: Int) {
+    private fun applyDrumBpm(v: Int) {
         drumBpm = v.coerceIn(70, 180)
         if (drumsPlaying) Engine.nativeSetMetronome(true, drumBpm.toFloat())
         save()
