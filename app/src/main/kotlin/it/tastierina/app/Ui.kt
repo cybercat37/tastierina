@@ -51,6 +51,13 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.text.style.TextAlign
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.foundation.layout.heightIn
@@ -105,8 +112,8 @@ fun TastierinaApp() {
             .fillMaxSize()
             .background(C.body)
             .windowInsetsPadding(WindowInsets.displayCutout)
-            .padding(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 14.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+            .padding(start = 18.dp, end = 18.dp, top = 8.dp, bottom = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         TopBar(
             onLevels = { showLevels = true },
@@ -132,19 +139,18 @@ fun TastierinaApp() {
     if (showHelp) HelpDialog { showHelp = false }
 }
 
+/**
+ * One row for every level: where you are, what to do (the display), the
+ * level's tempo and main action, then volume and help. Every control is 44 dp tall.
+ */
 @Composable
 private fun TopBar(onLevels: () -> Unit, onSound: () -> Unit, onHelp: () -> Unit) {
     val s = AppState
     Row(
         Modifier.fillMaxWidth().height(44.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Box(
-            Modifier.size(10.dp).clip(CircleShape)
-                .background(if (s.audioOk) Color(0xFFFFE27A) else Color(0xFF5E130C)),
-        )
-        Text("Tastierina", color = C.ink, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.8).sp)
         Pill(dark = true, label = "Livello ${s.level.number}, ${s.level.title}. Cambia livello", onClick = onLevels) {
             Text(s.level.number, fontFamily = Mono, fontSize = 17.sp, color = C.ivory.copy(alpha = 0.75f))
             Spacer(Modifier.width(6.dp))
@@ -153,82 +159,118 @@ private fun TopBar(onLevels: () -> Unit, onSound: () -> Unit, onHelp: () -> Unit
             Text("▾", color = C.ivory, fontSize = 12.sp)
         }
         Lcd(Modifier.weight(1f))
-        if (s.level == Level.RITMO) {
-            Pill(dark = true, label = "Velocità più lenta", onClick = { s.changeDrumBpm(-2) }) {
-                Text("−", color = C.ivory, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-            }
-            Text("${s.drumBpm} BPM", color = C.ink, fontFamily = Mono, fontSize = 18.sp)
-            Pill(dark = true, label = "Velocità più veloce", onClick = { s.changeDrumBpm(2) }) {
-                Text("+", color = C.ivory, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-            }
-            Pill(
-                dark = false,
-                filled = s.drumsPlaying,
-                label = if (s.drumsPlaying) "Ferma il ritmo" else "Fai suonare il ritmo",
-                onClick = { if (s.drumsPlaying) s.stopDrums() else s.playDrums() },
-            ) {
-                Text(if (s.drumsPlaying) "Ferma" else "Suona", color = C.ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-            }
-        }
-        if (s.metronomeRunning && s.level != Level.TASTI && s.level != Level.RITMO) {
-            Pill(dark = true, label = "Velocità più lenta", onClick = { s.changeBpm(-5) }) {
-                Text("−", color = C.ivory, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-            }
-            Text("${s.bpm} BPM", color = C.ink, fontFamily = Mono, fontSize = 18.sp)
-            Pill(dark = true, label = "Velocità più veloce", onClick = { s.changeBpm(5) }) {
-                Text("+", color = C.ivory, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-            }
-        }
-        if (s.level == Level.RITMO) {
-            // Suona/Ferma sits with the tempo controls above.
-        } else if (s.level == Level.TASTI) {
-            if (s.song != null && s.playMode == PlayMode.A_TEMPO) {
-                Pill(
-                    dark = false,
-                    filled = true,
-                    label = if (s.takeRunning) "Ferma la prova" else "Inizia la prova a tempo",
-                    onClick = { if (s.takeRunning) s.stopTake() else s.startTake() },
-                ) {
-                    Text(if (s.takeRunning) "Ferma" else "Via!", color = C.ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        when (s.level) {
+            Level.PAD -> {
+                if (s.tempo) BpmStepper(s.bpm) { s.changeBpm(it) }
+                Action(if (s.tempo) "Fine" else "Tieni il tempo", s.tempo, if (s.tempo) "Esci da Tieni il tempo" else "Tieni il tempo") {
+                    s.setTempoMode(!s.tempo)
                 }
             }
-            if (s.song != null && !s.takeRunning) {
-                val playing = s.demoStarts != null
-                Pill(
-                    dark = false,
-                    filled = playing,
-                    label = if (playing) "Ferma l'ascolto" else "Ascolta la canzone",
-                    onClick = { if (playing) s.stopDemo() else s.startDemo() },
-                ) {
-                    Text(if (playing) "Ferma" else "Ascolta", color = C.ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            Level.RIPETI -> {
+                BpmStepper(s.bpm) { s.changeBpm(it) }
+                Action("Ricomincia", false, "Ricomincia dalla frase 1") { s.startRipeti() }
+            }
+            Level.TASTI -> if (s.song != null) {
+                if (s.playMode == PlayMode.A_TEMPO) {
+                    Action(if (s.takeRunning) "Ferma" else "Via!", true, if (s.takeRunning) "Ferma la prova" else "Inizia la prova a tempo") {
+                        if (s.takeRunning) s.stopTake() else s.startTake()
+                    }
+                }
+                if (!s.takeRunning) {
+                    val playing = s.demoStarts != null
+                    Action(if (playing) "Ferma" else "Ascolta", playing, if (playing) "Ferma l'ascolto" else "Ascolta la canzone") {
+                        if (playing) s.stopDemo() else s.startDemo()
+                    }
                 }
             }
-        } else if (s.level == Level.PAD) {
-            Pill(
-                dark = false,
-                filled = s.tempo,
-                label = if (s.tempo) "Esci da Tieni il tempo" else "Tieni il tempo",
-                onClick = { s.setTempoMode(!s.tempo) },
-            ) {
-                Text(
-                    if (s.tempo) "Fine" else "Tieni il tempo",
-                    color = C.ink,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-        } else {
-            Pill(dark = false, label = "Ricomincia dal giro 1", onClick = { s.startRipeti() }) {
-                Text("Ricomincia", color = C.ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            Level.RITMO -> {
+                BpmStepper(s.drumBpm) { s.changeDrumBpm(it) }
+                Action(if (s.drumsPlaying) "Ferma" else "Suona", true, if (s.drumsPlaying) "Ferma il ritmo" else "Fai suonare il ritmo") {
+                    if (s.drumsPlaying) s.stopDrums() else s.playDrums()
+                }
             }
         }
-        RoundButton("Suono e volume", onSound) {
-            Text("≡", color = C.ebony, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        RoundButton("Volume e audio", onSound) {
+            Text("Vol", color = C.ebony, fontSize = 13.sp, fontWeight = FontWeight.ExtraBold)
         }
-        RoundButton("Aiuto", onHelp) {
-            Text("?", color = C.ebony, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
+        RoundButton("Aiuto per questo livello", onHelp) {
+            Text("?", color = C.ebony, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
         }
     }
+}
+
+/** The level's main action: filled with the accent when it is the thing to press, or running. */
+@Composable
+private fun Action(text: String, filled: Boolean, label: String, onClick: () -> Unit) {
+    Pill(dark = false, filled = filled, label = label, onClick = onClick) {
+        Text(text, color = C.ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+    }
+}
+
+@Composable
+private fun BpmStepper(bpm: Int, change: (Int) -> Unit) {
+    Stepper("$bpm BPM", "Più lento", "Più veloce", { change(-2) }, { change(2) }, valueWidth = 68.dp)
+}
+
+/** − value +, in one control. Holding a side keeps stepping. */
+@Composable
+internal fun Stepper(
+    value: String,
+    minusLabel: String,
+    plusLabel: String,
+    onMinus: () -> Unit,
+    onPlus: () -> Unit,
+    valueWidth: Dp = 68.dp,
+) {
+    Row(
+        Modifier.height(44.dp).clip(RoundedCornerShape(22.dp)).background(Color(0xFF34363A)),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        StepButton("−", minusLabel, onMinus)
+        Text(
+            value,
+            color = C.ivory,
+            fontFamily = Mono,
+            fontSize = 15.sp,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            modifier = Modifier.width(valueWidth),
+        )
+        StepButton("+", plusLabel, onPlus)
+    }
+}
+
+@Composable
+private fun StepButton(sign: String, label: String, action: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val current by rememberUpdatedState(action)
+    Box(
+        Modifier.width(44.dp).fillMaxHeight()
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onPress = {
+                        current()
+                        val job = scope.launch {
+                            delay(450)
+                            while (true) {
+                                current()
+                                delay(90)
+                            }
+                        }
+                        tryAwaitRelease()
+                        job.cancel()
+                    },
+                )
+            }
+            .semantics {
+                contentDescription = label
+                onClick(label) {
+                    current()
+                    true
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) { Text(sign, color = C.ivory, fontSize = 20.sp, fontWeight = FontWeight.Bold) }
 }
 
 @Composable
@@ -264,24 +306,38 @@ private fun Lcd(modifier: Modifier) {
         s.lastPad >= 0 -> s.padNames[s.lastPad].uppercase() + "  ·  tocca, ascolta, ripeti"
         else -> "tocca un pad"
     }
-    Row(
-        modifier.height(36.dp).clip(RoundedCornerShape(7.dp)).background(C.lcd).padding(horizontal = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        if (s.metronomeRunning) {
-            val pos = s.beatPosition
-            val lit = if (pos.isNaN() || pos < 0) -1 else Math.floorMod(floor(pos).toLong(), 4L).toInt()
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                repeat(4) { i ->
-                    Box(
-                        Modifier.size(12.dp).clip(CircleShape)
-                            .then(if (i == lit) Modifier.background(C.lcdInk) else Modifier.border(2.dp, C.lcdInk, CircleShape)),
-                    )
+    // Short messages are big; a long instruction gets two smaller lines instead of being cut.
+    BoxWithConstraints(modifier.height(44.dp).clip(RoundedCornerShape(8.dp)).background(C.lcd)) {
+        val dots = s.metronomeRunning
+        val room = maxWidth.value - 24f - if (dots) 78f else 0f
+        val big = text.length * 10.4f <= room
+        Row(
+            Modifier.fillMaxSize().padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (dots) {
+                val pos = s.beatPosition
+                val lit = if (pos.isNaN() || pos < 0) -1 else Math.floorMod(floor(pos).toLong(), 4L).toInt()
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    repeat(4) { i ->
+                        Box(
+                            Modifier.size(12.dp).clip(CircleShape)
+                                .then(if (i == lit) Modifier.background(C.lcdInk) else Modifier.border(2.dp, C.lcdInk, CircleShape)),
+                        )
+                    }
                 }
             }
+            Text(
+                text,
+                color = C.lcdInk,
+                fontFamily = Mono,
+                fontSize = if (big) 17.sp else 13.sp,
+                lineHeight = if (big) 20.sp else 16.sp,
+                maxLines = if (big) 1 else 2,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
-        Text(text, color = C.lcdInk, fontFamily = Mono, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -602,10 +658,10 @@ private fun Pill(
     filled: Boolean = false,
     content: @Composable () -> Unit,
 ) {
-    val shape = RoundedCornerShape(18.dp)
+    val shape = RoundedCornerShape(22.dp)
     Row(
         Modifier
-            .height(36.dp)
+            .height(44.dp)
             .clip(shape)
             .then(
                 when {
@@ -624,7 +680,7 @@ private fun Pill(
 @Composable
 private fun RoundButton(label: String, onClick: () -> Unit, content: @Composable () -> Unit) {
     Box(
-        Modifier.size(36.dp).clip(CircleShape).background(C.ivory)
+        Modifier.size(44.dp).clip(CircleShape).background(C.ivory)
             .clickable(onClickLabel = label, onClick = onClick)
             .semantics { contentDescription = label },
         contentAlignment = Alignment.Center,
@@ -663,24 +719,27 @@ internal fun Sheet(onClose: () -> Unit, width: Dp, title: String, content: @Comp
 @Composable
 private fun LevelsDialog(onClose: () -> Unit) {
     val levels = listOf(
-        Triple("0", "Pad", "Otto pad da colpire e il gioco del battito."),
-        Triple("0.5", "Ripeti", "L'app suona una frase sui pad, tu la ripeti a tempo."),
-        Triple("1", "Tastierina", "La tastiera e le canzoni guidate a pallini."),
-        Triple("2", "Ritmo", "Batteria a 16 passi e lezioni di ritmo."),
-        Triple("3", "Groove", "Basso e melodia, registrazione dai tasti."),
-        Triple("4", "Groovebox", "Giri A B C, battute e scaletta."),
+        Triple("0", "Pad", "Otto pad e il gioco del battito."),
+        Triple("0.5", "Ripeti", "Ascolta una frase e ripetila a tempo."),
+        Triple("1", "Tastierina", "Tastiera, canzoni guidate, stelle."),
+        Triple("2", "Ritmo", "Batteria a 16 passi e lezioni."),
+        Triple("3", "Groove", "Basso, melodia e registrazione."),
+        Triple("4", "Groovebox", "Giri, battute e scaletta."),
     )
-    Sheet(onClose, 720.dp, "Scegli il livello") {
-        Text("Tocca un livello per sceglierlo. I successivi arrivano uno alla volta.", color = C.sheetMuted, fontSize = 16.sp, lineHeight = 22.sp)
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    // Compact enough to fit a phone held sideways without scrolling.
+    Sheet(onClose, 820.dp, "Scegli il livello") {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             levels.forEachIndexed { i, (n, name, what) ->
                 val available = Level.entries.getOrNull(i)
                 val ready = available == AppState.level
                 Column(
-                    Modifier.weight(1f).height(210.dp).clip(RoundedCornerShape(14.dp))
+                    Modifier.weight(1f).height(168.dp).clip(RoundedCornerShape(14.dp))
                         .then(
-                            if (ready) Modifier.background(C.accent)
-                            else Modifier.background(Color.White).border(1.5.dp, Color(0xFFB9B2A4), RoundedCornerShape(14.dp)),
+                            when {
+                                ready -> Modifier.background(C.accent)
+                                available != null -> Modifier.background(Color.White).border(1.5.dp, Color(0xFF8A8478), RoundedCornerShape(14.dp))
+                                else -> Modifier.background(Color(0xFFEFEAE0))
+                            },
                         )
                         .then(
                             if (available != null) Modifier.clickable(onClickLabel = "Scegli $name") {
@@ -688,21 +747,24 @@ private fun LevelsDialog(onClose: () -> Unit) {
                                 onClose()
                             } else Modifier,
                         )
-                        .padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(5.dp),
                 ) {
-                    val ink = if (ready) Color.White else C.sheetInk
-                    Text(n, color = ink, fontFamily = Mono, fontSize = 30.sp)
-                    Text(name, color = ink, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
-                    Text(what, color = ink, fontSize = 14.sp, lineHeight = 18.sp)
+                    val ink = when {
+                        ready -> Color.White
+                        available != null -> C.sheetInk
+                        else -> C.sheetMuted
+                    }
+                    Text(n, color = ink, fontFamily = Mono, fontSize = 22.sp)
+                    Text(name, color = ink, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1)
+                    Text(what, color = ink, fontSize = 13.sp, lineHeight = 17.sp)
                     Spacer(Modifier.weight(1f))
-                    Text(
-                        when {
-                            ready -> "IN USO"
-                            available != null -> "TOCCA PER USARE"
-                            else -> "IN ARRIVO"
-                        },
-                        color = ink, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
+                    if (ready || available == null) {
+                        Text(
+                            if (ready) "IN USO" else "IN ARRIVO",
+                            color = ink, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp,
+                        )
+                    }
                 }
             }
         }
@@ -738,23 +800,44 @@ private fun SoundDialog(onClose: () -> Unit) {
     }
 }
 
+/** Help for the level on screen, then the controls every level shares. */
 @Composable
 private fun HelpDialog(onClose: () -> Unit) {
-    val lines = listOf(
-        "Pad" to "Tocca un pad per sentirlo. Puoi usare più dita insieme.",
-        "Tieni il tempo" to "Parte il battito: tocca la Cassa su ogni colpo. Il pannello a destra dice se eri a tempo, oppure quanto prima o dopo il battito.",
-        "Ripeti" to "Livello 0.5: ascolta la frase, aspetta il conto 4, 3, 2, 1 e ripetila a tempo, battuta dopo battuta, quante volte vuoi. La prima nota cade proprio dopo l'1. Ogni battuta ha il suo esito. Risenti la fa riascoltare, Prossima passa a una frase nuova, più lunga se almeno una battuta era giusta.",
-        "Impara / A tempo" to "In Impara la canzone ti aspetta e conta i tasti sbagliati. In A tempo parte il metronomo con il conto 4, 3, 2, 1 e ogni nota va suonata al momento giusto: la striscia la colora verde a tempo, gialla presto o tardi, rossa mancata. Alla fine arrivano le stelle e un consiglio.",
-        "Ritmo" to "Livello 2: una griglia di 16 caselle per ogni suono di batteria, una casella per sedicesimo di battuta. Tocca per accendere o spegnere, trascina lungo una riga per accenderne tante. Le lezioni House, Techno e Drum and bass ti guidano una riga alla volta con i pallini verdi.",
-        "Tastierina" to "Livello 1: 18 tasti da suonare con più dita, anche trascinando. Scegli una canzone: il pallino pieno è il tasto da premere, il cerchietto quello dopo, e la canzone ti aspetta. Ascolta la fa sentire intera.",
-        "− BPM +" to "Cambia la velocità del battito, anche mentre suona.",
-        "Livello" to "Da qui si sale di livello, man mano che arrivano.",
-        "≡" to "Volume, e quanto ritardo ha l'audio su questo telefono.",
+    val level = AppState.level
+    val lines = when (level) {
+        Level.PAD -> listOf(
+            "Pad" to "Tocca un pad per sentirlo. Puoi usare più dita insieme.",
+            "Tieni il tempo" to "Parte il battito: tocca la Cassa su ogni colpo. Il pannello a destra dice se eri a tempo, oppure quanto prima o dopo il battito.",
+        )
+        Level.RIPETI -> listOf(
+            "Il giro" to "Ascolta la frase, aspetta il conto 4, 3, 2, 1 e ripetila a tempo, battuta dopo battuta, quante volte vuoi. La prima nota cade proprio dopo l'1.",
+            "Esito" to "Ogni battuta ha il suo: ✓ a tempo, ‹ presto, › tardi, ✗ mancata.",
+            "Risenti" to "Fa riascoltare la stessa frase, con il conto.",
+            "Prossima" to "Passa a una frase nuova, più lunga se almeno una battuta era giusta.",
+        )
+        Level.TASTI -> listOf(
+            "Tasti" to "Si suonano con più dita, anche trascinando. Il puntino arancione segna il Do centrale.",
+            "♪ Canzone" to "Scegli una canzone o Libera. Il pallino pieno è il tasto da premere, il cerchietto quello dopo.",
+            "Impara" to "La canzone ti aspetta e conta i tasti sbagliati.",
+            "A tempo" to "Premi Via!: dopo il conto 4, 3, 2, 1 ogni nota va suonata sul metronomo. Lenta la porta al 70%. La striscia si colora: verde a tempo, gialla presto o tardi, rossa mancata.",
+            "Ascolta" to "Fa sentire la canzone intera.",
+            "Strumento" to "Il pulsante con il nome dello strumento li mostra tutti; accanto c'è l'ottava.",
+        )
+        Level.RITMO -> listOf(
+            "Griglia" to "Una riga per suono, 16 caselle per battuta. Tocca per accendere o spegnere, trascina lungo la riga per accenderne tante. Tocca il nome di una riga per sentire il suono.",
+            "Lezione" to "Sceglie un ritmo da costruire: pallini verdi sulle caselle da accendere, cerchietti su quelle da spegnere, una riga alla volta.",
+            "Suoni" to "Sceglie quali suoni sono righe della griglia, fino a 8.",
+            "Svuota" to "Spegne tutto. Subito dopo diventa Annulla, se ci ripensi.",
+        )
+    } + listOf(
+        "− BPM +" to "Cambia la velocità. Tieni premuto per scorrere in fretta.",
+        "Livello" to "Il primo pulsante in alto cambia livello.",
+        "Vol" to "Volume, e quanto ritardo ha l'audio su questo telefono.",
     )
-    Sheet(onClose, 560.dp, "Come si usa") {
+    Sheet(onClose, 620.dp, "Come si usa: ${level.title}") {
         lines.forEach { (k, v) ->
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(k, color = C.sheetInk, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.width(130.dp))
+                Text(k, color = C.sheetInk, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.width(120.dp))
                 Text(v, color = C.sheetInk, fontSize = 16.sp, lineHeight = 22.sp, modifier = Modifier.weight(1f))
             }
         }

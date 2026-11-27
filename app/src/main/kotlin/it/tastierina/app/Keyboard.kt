@@ -25,6 +25,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -85,8 +88,8 @@ private fun keyAt(p: Offset, size: IntSize): Int? {
 
 @Composable
 fun TastiScreen(modifier: Modifier) {
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        TastiControls(Modifier.fillMaxWidth().height(38.dp))
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        TastiControls(Modifier.fillMaxWidth().height(44.dp))
         SongStrip(Modifier.fillMaxWidth().height(40.dp))
         Keyboard(Modifier.fillMaxWidth().weight(1f))
     }
@@ -94,9 +97,9 @@ fun TastiScreen(modifier: Modifier) {
 
 @Composable
 private fun Chip(text: String, selected: Boolean, label: String, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(19.dp)
+    val shape = RoundedCornerShape(22.dp)
     Box(
-        Modifier.height(38.dp).clip(shape)
+        Modifier.height(44.dp).clip(shape)
             .then(if (selected) Modifier.background(KAccent) else Modifier.border(1.5.dp, KInk.copy(alpha = 0.45f), shape))
             .clickable(onClickLabel = label, onClick = onClick)
             .semantics { contentDescription = label }
@@ -105,36 +108,80 @@ private fun Chip(text: String, selected: Boolean, label: String, onClick: () -> 
     ) { Text(text, color = KInk, fontSize = 14.sp, fontWeight = FontWeight.SemiBold) }
 }
 
+/** A chip that opens a list: the current choice, cut with … if long, and an arrow. */
+@Composable
+private fun PickerChip(text: String, selected: Boolean, label: String, maxText: Dp, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(22.dp)
+    Row(
+        Modifier.height(44.dp).clip(shape)
+            .then(if (selected) Modifier.background(KAccent) else Modifier.border(1.5.dp, KInk.copy(alpha = 0.45f), shape))
+            .clickable(onClickLabel = label, onClick = onClick)
+            .semantics { contentDescription = label }
+            .padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            text,
+            color = KInk,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.widthIn(max = maxText),
+        )
+        Text("▾", color = KInk, fontSize = 12.sp)
+    }
+}
+
+/** Song, how to play it, instrument, octave: everything fits the row, nothing hides off screen. */
 @Composable
 private fun TastiControls(modifier: Modifier) {
     val s = AppState
     var showSongs by remember { mutableStateOf(false) }
+    var showTimbres by remember { mutableStateOf(false) }
     if (showSongs) SongsDialog { showSongs = false }
+    if (showTimbres) TimbresDialog { showTimbres = false }
     s.result?.let { ResultDialog(it) }
     Row(
         modifier.horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Chip("♪  ${s.song?.title ?: "Libera"}  ▾", s.song != null, "Scegli la canzone") { showSongs = true }
+        PickerChip("♪ " + (s.song?.title ?: "Libera"), s.song != null, "Scegli la canzone", 150.dp) { showSongs = true }
         if (s.song != null) {
             for (m in PlayMode.entries) Chip(m.title, s.playMode == m, "Modo: ${m.title}") { s.selectPlayMode(m) }
             if (s.playMode == PlayMode.A_TEMPO) {
-                Chip(if (s.slow) "lenta" else "normale", false, "Velocità: tocca per cambiare") { s.toggleSlow() }
+                Chip("Lenta", s.slow, if (s.slow) "Velocità lenta, 70%: tocca per la normale" else "Velocità normale: tocca per la lenta") { s.toggleSlow() }
             }
         }
-        Spacer(Modifier.width(10.dp))
-        s.timbreNames.forEachIndexed { i, name ->
-            val id = s.timbreIds[i]
-            Chip(name, s.timbre == id, "Suono: $name") { s.selectTimbre(id) }
-        }
-        Spacer(Modifier.width(10.dp))
-        Chip("−", false, "Ottava più bassa") { s.changeOctave(-1) }
-        Text(
-            "ottava ${if (s.octave > 0) "+" else ""}${s.octave}",
-            color = KInk, fontFamily = KMono, fontSize = 15.sp,
+        val timbreName = s.timbreNames[s.timbreIds.indexOf(s.timbre).coerceAtLeast(0)]
+        PickerChip(timbreName, false, "Strumento: $timbreName. Scegli lo strumento", 90.dp) { showTimbres = true }
+        Stepper(
+            "ott. ${if (s.octave > 0) "+" else ""}${s.octave}",
+            "Ottava più bassa",
+            "Ottava più alta",
+            { s.changeOctave(-1) },
+            { s.changeOctave(1) },
+            valueWidth = 58.dp,
         )
-        Chip("+", false, "Ottava più alta") { s.changeOctave(1) }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun TimbresDialog(onClose: () -> Unit) {
+    val s = AppState
+    Sheet(onClose, 620.dp, "Scegli lo strumento") {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            s.timbreNames.forEachIndexed { i, name ->
+                val id = s.timbreIds[i]
+                SheetChip(name, s.timbre == id) {
+                    s.selectTimbre(id)
+                    onClose()
+                }
+            }
+        }
     }
 }
 

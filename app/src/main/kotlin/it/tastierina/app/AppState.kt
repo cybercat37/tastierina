@@ -321,6 +321,7 @@ object AppState {
     }
 
     fun changeBpm(delta: Int) {
+        if ((bpm + delta).coerceIn(BPM_MIN, BPM_MAX) == bpm) return
         bpm = (bpm + delta).coerceIn(BPM_MIN, BPM_MAX)
         if (metronomeRunning) Engine.nativeSetMetronome(true, bpm.toFloat())
         save()
@@ -667,6 +668,7 @@ object AppState {
 
     fun setStep(track: Int, step: Int, on: Boolean) {
         if (track !in pattern.indices || step !in 0 until DRUM_STEPS || isOn(track, step) == on) return
+        forgetCleared()
         pattern[track] = if (on) pattern[track] or (1 shl step) else pattern[track] and (1 shl step).inv()
         Engine.nativeSetStep(track, step, on)
         if (on && !drumsPlaying) Engine.nativeDrum(track)
@@ -678,6 +680,7 @@ object AppState {
     /** Shows or hides a sound's row. Hiding clears its steps, so nothing plays unseen. */
     fun toggleRow(id: Int) {
         if (id !in DRUM_SOUNDS.indices) return
+        forgetCleared()
         if (id in rows) {
             if (rows.size <= 1) return
             rows.remove(id)
@@ -710,9 +713,39 @@ object AppState {
         save()
     }
 
+    /** What "Svuota" removed, until the next change: "Annulla" brings it back. */
+    private var cleared: List<Int>? = null
+    var canUndoClear by mutableStateOf(false)
+        private set
+
+    private fun forgetCleared() {
+        cleared = null
+        canUndoClear = false
+    }
+
+    fun clearByUser() {
+        if (pattern.all { it == 0 }) return
+        cleared = pattern.toList()
+        canUndoClear = true
+        clearPattern()
+    }
+
+    fun undoClear() {
+        val before = cleared ?: return
+        for (i in pattern.indices) pattern[i] = before.getOrElse(i) { 0 }
+        forgetCleared()
+        pushPattern()
+        save()
+    }
+
+    fun previewDrum(id: Int) {
+        if (id in DRUM_SOUNDS.indices) Engine.nativeDrum(id)
+    }
+
     /** A lesson starts from an empty grid at its own tempo. */
     fun selectLesson(l: Lesson?) {
         lesson = l
+        forgetCleared()
         if (l != null) {
             showRowsFor(l)
             clearPattern()

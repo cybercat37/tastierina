@@ -61,17 +61,17 @@ private val BEAT_GAP = 6.dp
 
 @Composable
 fun RitmoScreen(modifier: Modifier) {
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        RitmoControls(Modifier.fillMaxWidth().height(38.dp))
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        RitmoControls(Modifier.fillMaxWidth().height(44.dp))
         DrumGrid(Modifier.fillMaxWidth().weight(1f))
     }
 }
 
 @Composable
 private fun DChip(text: String, selected: Boolean, label: String, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(19.dp)
+    val shape = RoundedCornerShape(22.dp)
     Box(
-        Modifier.height(38.dp).clip(shape)
+        Modifier.height(44.dp).clip(shape)
             .then(if (selected) Modifier.background(DAccent) else Modifier.border(1.5.dp, DInk.copy(alpha = 0.45f), shape))
             .clickable(onClickLabel = label, onClick = onClick)
             .semantics { contentDescription = label }
@@ -95,7 +95,11 @@ private fun RitmoControls(modifier: Modifier) {
         DChip("Lezione: ${s.lesson?.title ?: "libera"}  ▾", s.lesson != null, "Scegli la lezione") { showLessons = true }
         DChip("Suoni (${s.rows.size})  ▾", false, "Scegli i suoni della griglia") { showSounds = true }
         Spacer(Modifier.width(10.dp))
-        DChip("Svuota", false, "Spegni tutte le caselle") { s.clearPattern() }
+        if (s.canUndoClear) {
+            DChip("Annulla", true, "Rimetti le caselle che avevi") { s.undoClear() }
+        } else {
+            DChip("Svuota", false, "Spegni tutte le caselle") { s.clearByUser() }
+        }
     }
 }
 
@@ -136,6 +140,8 @@ private fun DrumGrid(modifier: Modifier) {
                                     strokes[c.id] = track to on
                                     s.setStep(track, step, on)
                                     view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                } else if (track >= 0 && x < 0) {
+                                    s.previewDrum(track) // a tap on the row's name plays its sound
                                 }
                             } else {
                                 val stroke = strokes[c.id]
