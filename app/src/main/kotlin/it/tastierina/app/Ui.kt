@@ -124,7 +124,7 @@ fun TastierinaApp() {
             TastiScreen(Modifier.weight(1f).fillMaxWidth())
         } else if (s.level == Level.RITMO) {
             RitmoScreen(Modifier.weight(1f).fillMaxWidth())
-        } else if (s.level == Level.GROOVE) {
+        } else if (s.level == Level.GROOVE || s.level == Level.GROOVEBOX) {
             GrooveScreen(Modifier.weight(1f).fillMaxWidth())
         } else Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -185,7 +185,7 @@ private fun TopBar(onLevels: () -> Unit, onSound: () -> Unit, onHelp: () -> Unit
                     }
                 }
             }
-            Level.RITMO, Level.GROOVE -> {
+            Level.RITMO, Level.GROOVE, Level.GROOVEBOX -> {
                 BpmStepper(s.drumBpm) { s.changeDrumBpm(it) }
                 Action(if (s.drumsPlaying) "Ferma" else "Suona", true, if (s.drumsPlaying) "Ferma il ritmo" else "Fai suonare il ritmo") {
                     if (s.drumsPlaying) s.stopDrums() else s.playDrums()
@@ -281,7 +281,7 @@ private fun Lcd(modifier: Modifier) {
     val e = s.evaluation
     val text = when {
         !s.audioOk -> "audio non disponibile: riapri l'app"
-        s.level == Level.RITMO || s.level == Level.GROOVE -> ritmoLcd()
+        s.level == Level.RITMO || s.level == Level.GROOVE || s.level == Level.GROOVEBOX -> ritmoLcd()
         s.level == Level.TASTI -> {
             val sg = s.song
             val errs = if (s.errors > 0) " · ${if (s.errors == 1) "1 errore" else "${s.errors} errori"}" else ""
@@ -839,6 +839,14 @@ private fun HelpDialog(onClose: () -> Unit) {
             "Registra" to "Il giro parte e le note che suoni sui tasti entrano nella riga scelta, sulla casella più vicina. Prima il basso, poi la melodia sopra.",
             "Filtro" to "Rende il basso più scuro o più brillante.",
             "Lezione" to "Dopo la batteria arriva un passo in più: il basso. Il pallino sui tasti mostra la nota da scegliere, le caselle verdi dove metterla.",
+        )
+        Level.GROOVEBOX -> listOf(
+            "Tre viste" to "Batteria e Note sono quelle del livello 3. Brano è dove si costruisce il pezzo: giri, battute, scaletta.",
+            "Giri A B C" to "Tre giri diversi. Mentre suona, il cambio arriva alla fine del giro. Copia duplica il giro in uso nel successivo, per farne una variazione.",
+            "Battute" to "Un giro può durare 1, 2 o 4 battute. Quelle nuove partono come copia delle prime. Il pulsante batt. sceglie quale vedi; Segui la fa scorrere con la musica.",
+            "Scaletta" to "Una fila di passi: un giro e quante volte ripeterlo. Tocca la lettera per cambiare giro, il numero per le ripetizioni, + per aggiungere un passo. Accesa, lo strumento passa da un passo all'altro da solo e alla fine ricomincia.",
+            "Basso" to "Filtro, più scuro o più brillante, e durata delle note.",
+            "Lezione" to "Si costruisce nella prima battuta del giro in uso.",
         )
     } + listOf(
         "− BPM +" to "Cambia la velocità. Tieni premuto per scorrere in fretta.",

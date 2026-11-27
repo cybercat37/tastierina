@@ -4,6 +4,11 @@ import android.view.HapticFeedbackConstants
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -49,27 +54,40 @@ private val ROW_COLORS = listOf(Color(0xFFF0B429), Color(0xFF7CC0FF))
 private val NOTE_LABEL = 104.dp
 
 /**
- * Level 3: the giro has two views. "Batteria" is the drum grid of level 2;
- * "Note" shows the melody and bass rows with the keys underneath, to choose
- * notes and to record.
+ * Levels 3 and 4. The giro has two views: "Batteria" is the drum grid of
+ * level 2, "Note" shows the melody and bass rows with the keys underneath.
+ * Level 4 adds "Brano": giri A B C, bars, the scaletta.
  */
 @Composable
 fun GrooveScreen(modifier: Modifier) {
     val s = AppState
     Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         GrooveControls(Modifier.fillMaxWidth().height(44.dp))
-        if (s.noteView) {
-            NoteGrid(Modifier.fillMaxWidth().height(104.dp))
-            Keyboard(Modifier.fillMaxWidth().weight(1f), next = s.bassNeed, after = -1, middleC = -1)
-        } else {
-            DrumGrid(Modifier.fillMaxWidth().weight(1f))
+        when {
+            s.giroView -> BranoPanel(Modifier.fillMaxWidth().weight(1f))
+            s.noteView -> {
+                NoteGrid(Modifier.fillMaxWidth().height(104.dp))
+                Keyboard(Modifier.fillMaxWidth().weight(1f), next = s.bassNeed, after = -1, middleC = -1)
+            }
+            else -> DrumGrid(Modifier.fillMaxWidth().weight(1f))
         }
+    }
+}
+
+@Composable
+private fun ClearChip() {
+    val s = AppState
+    if (s.canUndoClear) {
+        DChip("Annulla", true, "Rimetti le caselle che avevi") { s.undoClear() }
+    } else {
+        DChip("Svuota", false, "Svuota il giro in uso: batteria, basso e melodia") { s.clearByUser() }
     }
 }
 
 @Composable
 private fun GrooveControls(modifier: Modifier) {
     val s = AppState
+    val full = s.level == Level.GROOVEBOX
     var showLessons by remember { mutableStateOf(false) }
     var showSounds by remember { mutableStateOf(false) }
     if (showLessons) LessonsDialog { showLessons = false }
@@ -79,31 +97,156 @@ private fun GrooveControls(modifier: Modifier) {
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        DChip("Batteria", !s.noteView, "Vista batteria") { s.showNotes(false) }
+        DChip("Batteria", !s.noteView && !s.giroView, "Vista batteria") { s.showNotes(false) }
         DChip("Note", s.noteView, "Vista note: melodia e basso con i tasti") { s.showNotes(true) }
+        if (full) DChip("Brano", s.giroView, "Vista brano: giri, battute, scaletta") { s.showGiro() }
         Spacer(Modifier.width(6.dp))
-        if (s.noteView) {
-            DChip("● Registra", s.recArmed, if (s.recArmed) "Smetti di registrare" else "Registra dai tasti nella riga scelta") { s.toggleRec() }
-            DChip("Basso", s.recTarget == 0, "I tasti suonano e scrivono il basso") { s.selectTarget(0) }
-            DChip("Melodia", s.recTarget == 1, "I tasti suonano e scrivono la melodia") { s.selectTarget(1) }
-            Stepper(
-                "filtro ${s.bassCut}",
-                "Basso più scuro",
-                "Basso più brillante",
-                { s.changeBassCut(-1) },
-                { s.changeBassCut(1) },
-                valueWidth = 70.dp,
-            )
-        } else {
-            DChip("Lezione: ${s.lesson?.title ?: "libera"}  ▾", s.lesson != null, "Scegli la lezione") { showLessons = true }
-            DChip("Suoni (${s.rows.size})  ▾", false, "Scegli i suoni della griglia") { showSounds = true }
+        if (full && !s.giroView) {
+            // Which giro and which bar the grid shows; a tap moves to the next.
+            val next = if (s.queuedGiro >= 0) " → ${GIRO_NAMES[s.queuedGiro]}" else ""
+            DChip("Giro ${GIRO_NAMES[s.giro]}$next", false, "Giro in uso: tocca per passare al successivo") {
+                s.selectGiro((s.giro + 1) % GIRO_COUNT)
+            }
+            if (s.bars > 1) {
+                DChip("batt. ${s.page + 1}/${s.bars}", false, "Battuta mostrata: tocca per la successiva") {
+                    s.showBar((s.page + 1) % s.bars)
+                }
+            }
         }
-        if (s.canUndoClear) {
-            DChip("Annulla", true, "Rimetti le caselle che avevi") { s.undoClear() }
-        } else {
-            DChip("Svuota", false, "Svuota tutto il giro: batteria, basso e melodia") { s.clearByUser() }
+        when {
+            s.giroView -> {}
+            s.noteView -> {
+                DChip("● Registra", s.recArmed, if (s.recArmed) "Smetti di registrare" else "Registra dai tasti nella riga scelta") { s.toggleRec() }
+                DChip("Basso", s.recTarget == 0, "I tasti suonano e scrivono il basso") { s.selectTarget(0) }
+                DChip("Melodia", s.recTarget == 1, "I tasti suonano e scrivono la melodia") { s.selectTarget(1) }
+                if (!full) FilterStepper()
+            }
+            else -> {
+                DChip("Lezione: ${s.lesson?.title ?: "libera"}  ▾", s.lesson != null, "Scegli la lezione") { showLessons = true }
+                DChip("Suoni (${s.rows.size})  ▾", false, "Scegli i suoni della griglia") { showSounds = true }
+            }
+        }
+        // At level 4 "Svuota" lives in the Brano view, next to the giro it empties.
+        if (!full) ClearChip()
+    }
+}
+
+@Composable
+private fun FilterStepper() {
+    val s = AppState
+    Stepper(
+        "filtro ${s.bassCut}",
+        "Basso più scuro",
+        "Basso più brillante",
+        { s.changeBassCut(-1) },
+        { s.changeBassCut(1) },
+        valueWidth = 70.dp,
+    )
+}
+
+/** Level 4: the song. Which giro, how long it is, in what order the giri play. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun BranoPanel(modifier: Modifier) {
+    val s = AppState
+    Column(
+        modifier.clip(RoundedCornerShape(12.dp)).background(GWell).verticalScroll(rememberScrollState()).padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Section("Giro in uso") {
+            for (g in 0 until GIRO_COUNT) {
+                val waiting = if (s.queuedGiro == g) " (a fine giro)" else ""
+                DChip(GIRO_NAMES[g] + waiting, s.giro == g, "Giro ${GIRO_NAMES[g]}") { s.selectGiro(g) }
+            }
+            val to = GIRO_NAMES[(s.giro + 1) % GIRO_COUNT]
+            DChip("Copia in $to", false, "Copia questo giro nel giro $to e vai lì") { s.copyGiro() }
+            ClearChip()
+        }
+        Section("Battute del giro ${GIRO_NAMES[s.giro]}") {
+            for (n in BAR_CHOICES) DChip("$n", s.bars == n, if (n == 1) "1 battuta" else "$n battute") { s.changeBars(n) }
+            if (s.bars > 1) {
+                Caption("mostra")
+                for (b in 0 until s.bars) DChip("${b + 1}", s.page == b, "Mostra la battuta ${b + 1}") { s.showBar(b) }
+                DChip("Segui", s.followPage, "La griglia segue la battuta che suona") { s.toggleFollow() }
+            }
+        }
+        Section("Scaletta") {
+            DChip(if (s.chainOn) "Accesa" else "Spenta", s.chainOn, "Scaletta: i giri cambiano da soli") { s.toggleChain() }
+            s.chain.forEachIndexed { i, step ->
+                if (i > 0) Caption("→")
+                val live = s.chainOn && s.drumsPlaying && s.chainPos == i
+                ChainSlot(i, step, live, s.chainRep, canRemove = s.chain.size > 1)
+            }
+            if (s.chain.size < CHAIN_MAX) DChip("+", false, "Aggiungi un passo alla scaletta") { s.chainAdd() }
+        }
+        Section("Basso") {
+            FilterStepper()
+            Stepper(
+                "durata ${s.bassGate}%",
+                "Note del basso più corte",
+                "Note del basso più lunghe",
+                { s.changeBassGate(-5) },
+                { s.changeBassGate(5) },
+                valueWidth = 104.dp,
+            )
         }
     }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun Section(title: String, content: @Composable () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            title.uppercase(),
+            color = GInk.copy(alpha = 0.8f),
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 1.3.sp,
+        )
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            content()
+        }
+    }
+}
+
+/** A word or arrow between chips, centred on their height. */
+@Composable
+private fun Caption(text: String) {
+    Box(Modifier.height(44.dp), contentAlignment = Alignment.Center) {
+        Text(text, color = GInk.copy(alpha = 0.8f), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+/** One step of the scaletta: the giro, how many times, and a way to remove it. Lit while it plays. */
+@Composable
+private fun ChainSlot(index: Int, step: ChainStep, live: Boolean, rep: Int, canRemove: Boolean) {
+    val s = AppState
+    val shape = RoundedCornerShape(22.dp)
+    val giro = GIRO_NAMES[step.giro]
+    Row(
+        Modifier.height(44.dp).clip(shape)
+            .then(if (live) Modifier.background(GAccent) else Modifier.border(1.5.dp, GInk.copy(alpha = 0.45f), shape)),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        SlotButton(giro, "Passo ${index + 1}: giro $giro. Tocca per cambiare giro", 46.dp) { s.chainCycleGiro(index) }
+        SlotButton(
+            if (live) "${rep + 1}/${step.reps}" else "×${step.reps}",
+            "Passo ${index + 1}: ${step.reps} volte. Tocca per cambiare",
+            50.dp,
+        ) { s.chainCycleReps(index) }
+        if (canRemove) SlotButton("✕", "Togli il passo ${index + 1}", 40.dp) { s.chainRemove(index) }
+    }
+}
+
+@Composable
+private fun SlotButton(text: String, label: String, width: Dp, onClick: () -> Unit) {
+    Box(
+        Modifier.width(width).fillMaxHeight()
+            .clickable(onClickLabel = label, onClick = onClick)
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
+    ) { Text(text, color = GInk, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1) }
 }
 
 /**

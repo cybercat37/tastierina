@@ -61,17 +61,30 @@ object Engine {
     external fun nativeTakeNextPending(): Int
     external fun nativeTakeSummary(): Long
 
-    // Drum machine (level 2): rows 0 cassa, 1 rullante, 2 clap, 3 hat chiuso, 4 hat aperto.
-    external fun nativeSetStep(track: Int, step: Int, on: Boolean)
+    // Sequencer (levels 2 to 4): three giri (0 A, 1 B, 2 C) of up to 64 steps.
+    // Drum rows by sound id: 0 cassa, 1 rullante, 2 clap, 3 hat chiuso, 4 hat aperto...
+    external fun nativeSetStep(giro: Int, track: Int, step: Int, on: Boolean)
     /** Bit s of [steps] is step s. */
-    external fun nativeSetPattern(track: Int, steps: Int)
-    /** Plays the pattern on the running metronome, a step per sixteenth. */
+    external fun nativeSetPattern(giro: Int, track: Int, steps: Long)
+    external fun nativeClearGiro(giro: Int)
+    /** 1, 2 or 4 bars. */
+    external fun nativeSetBars(giro: Int, bars: Int)
+    /** The giro to play and edit: at once when stopped, at the end of the loop when playing. */
+    external fun nativeSelectGiro(giro: Int)
+    external fun nativeSetChain(index: Int, giro: Int, reps: Int)
+    /** Length of the scaletta and whether it drives the giri. */
+    external fun nativeChain(len: Int, on: Boolean)
+    /** Plays the giro on the running metronome, a step per sixteenth. */
     external fun nativeSequencer(on: Boolean)
+    /** engine::SeqState::pack: where the sequencer is. */
+    external fun nativeSeqState(): Long
+    /** How much of its step a bass note is held, 0.15 to 1. */
+    external fun nativeBassGate(gate: Float)
     external fun nativeDrum(track: Int)
 
     // Note rows (level 3): row 0 bass, 1 melody; key 0..17 of the keyboard, -1 silent.
-    external fun nativeSetNote(row: Int, step: Int, key: Int)
-    /** Records a key played at [touchNanos] on the nearest step; returns it, or -1. */
+    external fun nativeSetNote(giro: Int, row: Int, step: Int, key: Int)
+    /** Records a key played at [touchNanos] on the nearest step of the giro playing; returns it, or -1. */
     external fun nativeRecord(row: Int, key: Int, touchNanos: Long): Int
     /** 0 dark to 1 bright. */
     external fun nativeBassFilter(setting: Float)

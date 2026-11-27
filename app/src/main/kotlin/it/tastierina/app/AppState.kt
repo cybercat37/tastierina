@@ -16,6 +16,7 @@ enum class Level(val number: String, val title: String) {
     TASTI("1", "Tastierina"),
     RITMO("2", "Ritmo"),
     GROOVE("3", "Groove"),
+    GROOVEBOX("4", "Groovebox"),
 }
 
 enum class PlayMode(val title: String) { IMPARA("Impara"), A_TEMPO("A tempo") }
@@ -168,8 +169,45 @@ object AppState {
         private set
 
     // Ritmo
-    /** One bitmask per drum sound (by engine id): bit s is step s. */
+    /** The bar on screen: one 16-bit mask per drum sound (by engine id), bit s is step s. */
     val pattern = mutableStateListOf<Int>().apply { repeat(DRUM_SOUNDS.size) { add(0) } }
+    /** The three giri as stored, every bar. [pattern], [bassNotes] and [leadNotes] show one bar of one of them. */
+    private val store = Array(GIRO_COUNT) { GiroData() }
+    /** The giro on screen: the one played and edited. Always A below level 4. */
+    var giro by mutableIntStateOf(0)
+        private set
+    /** Bars of that giro, and the bar on screen. */
+    var bars by mutableIntStateOf(1)
+        private set
+    var page by mutableIntStateOf(0)
+        private set
+    /** While playing, the grid follows the bar being heard. */
+    var followPage by mutableStateOf(true)
+        private set
+    /** A giro chosen while playing, waiting for the end of the loop; -1 for none. */
+    var queuedGiro by mutableIntStateOf(-1)
+        private set
+    val chain = mutableStateListOf(ChainStep(0, 4), ChainStep(1, 4))
+    var chainOn by mutableStateOf(false)
+        private set
+    /** Step of the scaletta being played and how many times it has played already; -1 when it is not driving. */
+    var chainPos by mutableIntStateOf(-1)
+        private set
+    var chainRep by mutableIntStateOf(0)
+        private set
+    /** How long a bass note is held, percent of its step. */
+    var bassGate by mutableIntStateOf(55)
+        private set
+    /** Level 4, the third view: giri, bars, scaletta. */
+    var giroView by mutableStateOf(false)
+        private set
+    /** Step of the giro being heard, or -1. */
+    private var playStep by mutableIntStateOf(-1)
+    private val full: Boolean get() = level == Level.GROOVEBOX
+    private val notesLive: Boolean get() = level == Level.GROOVE || level == Level.GROOVEBOX
+    private val gridLevel: Boolean get() = level == Level.RITMO || notesLive
+    /** Below level 4 only the first bar of giro A plays. */
+    private fun barsOf(g: Int) = if (full) store[g].bars else 1
     /** Sounds shown as rows, in id order. */
     val rows = mutableStateListOf<Int>().apply { addAll(DEFAULT_ROWS) }
     /** Lessons finished at least once. */
@@ -181,7 +219,7 @@ object AppState {
     var lesson by mutableStateOf<Lesson?>(LESSONS.first())
         private set
     val lessonNow: LessonState?
-        get() = lesson?.let { lessonState(it, pattern, if (level == Level.GROOVE) bassNotes else null) }
+        get() = if (page != 0) null else lesson?.let { lessonState(it, pattern, if (notesLive) bassNotes else null) }
 
     // Groove: two note rows on the same sixteen steps. Engine rows: 0 bass, 1 melody.
     val bassNotes = mutableStateListOf<Int>().apply { repeat(DRUM_STEPS) { add(-1) } }
@@ -223,8 +261,7 @@ object AppState {
     /** Step under the playhead, or -1. */
     val drumStep: Int
         get() {
-            val pos = beatPosition
-            return if (!drumsPlaying || pos.isNaN() || pos < 0) -1 else Math.floorMod(kotlin.math.floor(pos * 4).toLong(), 16L).toInt()
+            return if (!drumsPlaying || playStep < 0 || playStep / 16 != page) -1 else playStep % 16
         }
 
     val metronomeRunning: Boolean get() = tempo || level == Level.RIPETI || demoStarts != null || takeRunning || drumsPlaying
@@ -261,8 +298,19 @@ object AppState {
         slow = p.getBoolean("slow", true)
         drumBpm = p.getInt("drumBpm", 124).coerceIn(70, 180)
         lesson = LESSONS.firstOrNull { it.id == p.getString("lesson", LESSONS.first().id) }
-        p.getString("pattern", null)?.split(',')?.forEachIndexed { i, v ->
-            if (i < pattern.size) pattern[i] = v.toIntOrNull() ?: 0
+        val savedGiri = p.getString("giri", null)?.split('|')
+        if (savedGiri != null) {
+            savedGiri.forEachIndexed { i, text -> if (i < GIRO_COUNT) GiroData.decode(text)?.let { store[i].copyFrom(it) } }
+        } else {
+            // Saved before giri existed: one bar of drums, bass and melody.
+            p.getString("pattern", null)?.split(',')?.forEachIndexed { i, v ->
+                if (i < store[0].drums.size) store[0].drums[i] = (v.toLongOrNull() ?: 0L) and 0xFFFFL
+            }
+            for ((key, row) in listOf("bassNotes" to 0, "leadNotes" to 1)) {
+                p.getString(key, null)?.split(',')?.forEachIndexed { i, v ->
+                    if (i < DRUM_STEPS) store[0].notes(row)[i] = (v.toIntOrNull() ?: -1).coerceIn(-1, KEY_COUNT - 1)
+                }
+            }
         }
         // Since the grid scrolls, every sound is a row unless the player chose otherwise.
         val savedRows = p.getString("rows2", null)?.split(',')?.mapNotNull { it.toIntOrNull() }
@@ -270,13 +318,20 @@ object AppState {
         rows.clear()
         rows.addAll((savedRows ?: DRUM_SOUNDS.indices.toList()).sorted())
         p.getString("lessonsDone", "")?.split(',')?.filter { it.isNotBlank() }?.let { lessonsDone.addAll(it) }
-        for ((key, list) in listOf("bassNotes" to bassNotes, "leadNotes" to leadNotes)) {
-            p.getString(key, null)?.split(',')?.forEachIndexed { i, v ->
-                if (i < list.size) list[i] = (v.toIntOrNull() ?: -1).coerceIn(-1, KEY_COUNT - 1)
-            }
-        }
         bassCut = p.getInt("bassCut", 5).coerceIn(0, 10)
         recTarget = p.getInt("recTarget", 0).coerceIn(0, 1)
+        bassGate = p.getInt("bassGate", 55).coerceIn(15, 100)
+        chainOn = p.getBoolean("chainOn", false)
+        p.getString("chain", null)?.split(',')?.mapNotNull { item ->
+            val g = item.substringBefore('x').toIntOrNull()
+            val n = item.substringAfter('x', "").toIntOrNull()
+            if (g != null && g in 0 until GIRO_COUNT && n != null && n in CHAIN_REPS) ChainStep(g, n) else null
+        }?.take(CHAIN_MAX)?.takeIf { it.isNotEmpty() }?.let {
+            chain.clear()
+            chain.addAll(it)
+        }
+        giro = if (full) p.getInt("giro", 0).coerceIn(0, GIRO_COUNT - 1) else 0
+        showGiroPage(0)
         resetMarks()
     }
 
@@ -296,11 +351,13 @@ object AppState {
             ?.putBoolean("slow", slow)
             ?.putInt("drumBpm", drumBpm)
             ?.putString("lesson", lesson?.id ?: "")
-            ?.putString("pattern", pattern.joinToString(","))
+            ?.putString("giri", store.joinToString("|") { it.encode() })
+            ?.putString("chain", chain.joinToString(",") { "${it.giro}x${it.reps}" })
+            ?.putBoolean("chainOn", chainOn)
+            ?.putInt("bassGate", bassGate)
+            ?.putInt("giro", giro)
             ?.putString("rows2", rows.joinToString(","))
             ?.putString("lessonsDone", lessonsDone.joinToString(","))
-            ?.putString("bassNotes", bassNotes.joinToString(","))
-            ?.putString("leadNotes", leadNotes.joinToString(","))
             ?.putInt("bassCut", bassCut)
             ?.putInt("recTarget", recTarget)
             ?.apply()
@@ -334,6 +391,7 @@ object AppState {
         if (level == Level.RIPETI && !pos.isNaN()) followRipeti(pos)
         if (demoStarts != null && !pos.isNaN()) followDemo(pos)
         if (takeRunning && !pos.isNaN()) followTake()
+        if (drumsPlaying) followSequencer(pos)
         previousPosition = pos
         frames++
         if (frames % 30 == 0 && Engine.nativeNeedsRestart()) {
@@ -360,13 +418,22 @@ object AppState {
         if (l == level) return
         if (level == Level.RIPETI) stopRipeti()
         if (level == Level.TASTI) leaveKeyboard()
-        if (level == Level.RITMO || level == Level.GROOVE) stopDrums()
-        if (level == Level.GROOVE) releaseAllKeys()
+        if (gridLevel) stopDrums()
+        if (notesLive) releaseAllKeys()
         if (tempo) setTempoMode(false)
         level = l
         if (l == Level.RIPETI) startRipeti()
-        // The note rows only sound from level 3: send the engine what this level plays.
-        if (l == Level.RITMO || l == Level.GROOVE) pushPattern()
+        if (gridLevel) {
+            // Each level plays its part of the same song: send the engine what this one plays.
+            forgetCleared()
+            if (!notesLive) noteView = false
+            if (!full) {
+                giroView = false
+                giro = 0
+            }
+            showGiroPage(0)
+            pushPattern()
+        }
         save()
     }
 
@@ -487,7 +554,7 @@ object AppState {
         if (key !in 0 until KEY_COUNT) return
         held[key] = held[key] + 1
         if (held[key] != 1) return
-        if (level == Level.GROOVE) {
+        if (notesLive) {
             // The keys sound like the row they write to, and choose the note for its cells.
             heldMidi[key] = rowBase[recTarget] + key
             Engine.nativeNoteOn(heldMidi[key], rowTimbre[recTarget], 0.9f)
@@ -495,8 +562,9 @@ object AppState {
             grooveHint = ""
             if (recArmed && drumsPlaying) {
                 val step = Engine.nativeRecord(recTarget, key, touchNanos)
-                if (step in 0 until DRUM_STEPS) {
-                    notesOf(recTarget)[step] = key
+                if (step in 0 until GIRO_STEPS) {
+                    store[giro].notes(recTarget)[step] = key
+                    if (step / 16 == page) notesOf(recTarget)[step % 16] = key
                     afterEdit()
                 }
             }
@@ -732,13 +800,72 @@ object AppState {
 
     // ---- Ritmo ---------------------------------------------------------------
 
-    private fun pushPattern() {
-        pattern.forEachIndexed { t, row -> Engine.nativeSetPattern(t, row) }
-        val notes = level == Level.GROOVE
-        for (row in 0..1) for (step in 0 until DRUM_STEPS) {
-            Engine.nativeSetNote(row, step, if (notes) noteAt(row, step) else -1)
+    /** Sends one giro to the engine as this level plays it. */
+    private fun pushGiro(g: Int) {
+        val data = store[g]
+        Engine.nativeClearGiro(g)
+        Engine.nativeSetBars(g, barsOf(g))
+        data.drums.forEachIndexed { t, mask -> if (mask != 0L) Engine.nativeSetPattern(g, t, mask) }
+        if (notesLive) {
+            for (row in 0..1) data.notes(row).forEachIndexed { step, key -> if (key >= 0) Engine.nativeSetNote(g, row, step, key) }
         }
+    }
+
+    private fun pushChain() {
+        chain.forEachIndexed { i, st -> Engine.nativeSetChain(i, st.giro, st.reps) }
+        Engine.nativeChain(chain.size, chainOn && full)
+    }
+
+    /** Sends the whole song to the engine. */
+    private fun pushPattern() {
+        for (g in 0 until GIRO_COUNT) pushGiro(g)
+        pushChain()
         Engine.nativeBassFilter(bassCut / 10f)
+        Engine.nativeBassGate(if (full) bassGate / 100f else 0.55f)
+        if (!drumsPlaying) Engine.nativeSelectGiro(giro)
+    }
+
+    /** Copies the bar on screen from the stored giro into the lists the grids draw. */
+    private fun loadPage() {
+        val data = store[giro]
+        for (t in pattern.indices) pattern[t] = data.pageMask(t, page)
+        for (i in 0 until DRUM_STEPS) {
+            bassNotes[i] = data.bass[page * 16 + i]
+            leadNotes[i] = data.lead[page * 16 + i]
+        }
+    }
+
+    private fun showGiroPage(wanted: Int) {
+        bars = barsOf(giro)
+        page = wanted.coerceIn(0, bars - 1)
+        loadPage()
+    }
+
+    /** While playing: which step is heard, which giro and scaletta step the engine is on. */
+    private fun followSequencer(heardBeat: Double) {
+        val v = Engine.nativeSeqState()
+        val running = ((v shr 53) and 1L) == 1L
+        if (!running || heardBeat.isNaN()) return
+        val nextStep = v and 0xFFFFFFFFL
+        val pos = ((v shr 32) and 0xFFL).toInt()
+        val engineGiro = ((v shr 40) and 3L).toInt()
+        val engineBars = ((v shr 42) and 7L).toInt().coerceAtLeast(1)
+        val cp = ((v shr 45) and 15L).toInt()
+        chainPos = if (cp == 15) -1 else cp
+        chainRep = ((v shr 49) and 15L).toInt()
+        queuedGiro = ((v shr 54) and 3L).toInt() - 1
+        if (full && engineGiro != giro && engineGiro in 0 until GIRO_COUNT) {
+            giro = engineGiro
+            forgetCleared()
+            showGiroPage(0)
+        }
+        val heard = kotlin.math.floor(heardBeat * 4).toLong()
+        playStep = Math.floorMod(pos + (heard - nextStep), engineBars * 16L).toInt()
+        val bar = playStep / 16
+        if (followPage && bar != page && bar < bars) {
+            page = bar
+            loadPage()
+        }
     }
 
     /** After any change to the giro: lesson progress, the view the lesson needs, saving. */
@@ -746,7 +873,10 @@ object AppState {
         forgetCleared()
         val st = lessonNow
         if (st is LessonState.Done && st.lesson.id !in lessonsDone) lessonsDone.add(st.lesson.id)
-        if (level == Level.GROOVE && st is LessonState.Bass && !noteView) noteView = true
+        if (notesLive && st is LessonState.Bass && !noteView) {
+            giroView = false
+            noteView = true
+        }
         save()
     }
 
@@ -754,7 +884,14 @@ object AppState {
 
     fun showNotes(on: Boolean) {
         if (!on) releaseAllKeys()
+        giroView = false
         noteView = on
+    }
+
+    fun showGiro() {
+        releaseAllKeys()
+        noteView = false
+        giroView = true
     }
 
     fun selectTarget(row: Int) {
@@ -803,7 +940,8 @@ object AppState {
             list[step] = -1
         }
         grooveHint = ""
-        Engine.nativeSetNote(row, step, list[step])
+        store[giro].notes(row)[page * 16 + step] = list[step]
+        Engine.nativeSetNote(giro, row, page * 16 + step, list[step])
         afterEdit()
         return true
     }
@@ -814,7 +952,10 @@ object AppState {
         if (track !in pattern.indices || step !in 0 until DRUM_STEPS || isOn(track, step) == on) return
         forgetCleared()
         pattern[track] = if (on) pattern[track] or (1 shl step) else pattern[track] and (1 shl step).inv()
-        Engine.nativeSetStep(track, step, on)
+        val at = page * 16 + step
+        val row = store[giro].drums
+        row[track] = if (on) row[track] or (1L shl at) else row[track] and (1L shl at).inv()
+        Engine.nativeSetStep(giro, track, at, on)
         if (on && !drumsPlaying) Engine.nativeDrum(track)
         afterEdit()
     }
@@ -826,8 +967,7 @@ object AppState {
         if (id in rows) {
             if (rows.size <= 1) return
             rows.remove(id)
-            pattern[id] = 0
-            Engine.nativeSetPattern(id, 0)
+            silenceSound(id)
         } else {
             if (rows.size >= MAX_ROWS) return
             rows.add(id)
@@ -835,6 +975,17 @@ object AppState {
             Engine.nativeDrum(id)
         }
         save()
+    }
+
+    /** A hidden sound must not play: its steps go, in every giro. */
+    private fun silenceSound(id: Int) {
+        pattern[id] = 0
+        for (g in 0 until GIRO_COUNT) {
+            if (store[g].drums[id] != 0L) {
+                store[g].drums[id] = 0L
+                Engine.nativeSetPattern(g, id, 0L)
+            }
+        }
     }
 
     fun showAllRows() {
@@ -849,10 +1000,7 @@ object AppState {
         forgetCleared()
         val keep = (DEFAULT_ROWS + (lesson?.sounds ?: emptyList())).distinct().sorted()
         for (id in DRUM_SOUNDS.indices) {
-            if (id !in keep && pattern[id] != 0) {
-                pattern[id] = 0
-                Engine.nativeSetPattern(id, 0)
-            }
+            if (id !in keep) silenceSound(id)
         }
         rows.clear()
         rows.addAll(keep)
@@ -871,23 +1019,16 @@ object AppState {
         rows.sort()
     }
 
-    private fun notesEmpty() = bassNotes.all { it < 0 } && leadNotes.all { it < 0 }
-
-    /** Empties the giro: the drums, and from level 3 the note rows too. */
+    /** Empties the giro in use: the drums, and from level 3 the note rows too. */
     fun clearPattern() {
-        for (i in pattern.indices) pattern[i] = 0
-        if (level == Level.GROOVE) {
-            for (i in 0 until DRUM_STEPS) {
-                bassNotes[i] = -1
-                leadNotes[i] = -1
-            }
-        }
-        pushPattern()
+        store[giro].clear(notes = notesLive)
+        pushGiro(giro)
+        loadPage()
         save()
     }
 
-    /** What "Svuota" removed, until the next change: "Annulla" brings it back. */
-    private var cleared: Triple<List<Int>, List<Int>, List<Int>>? = null
+    /** What "Svuota" removed and from which giro, until the next change: "Annulla" brings it back. */
+    private var cleared: Pair<Int, GiroData>? = null
     var canUndoClear by mutableStateOf(false)
         private set
 
@@ -897,21 +1038,18 @@ object AppState {
     }
 
     fun clearByUser() {
-        if (pattern.all { it == 0 } && (level != Level.GROOVE || notesEmpty())) return
-        cleared = Triple(pattern.toList(), bassNotes.toList(), leadNotes.toList())
+        if (store[giro].isEmpty(notes = notesLive)) return
+        cleared = giro to store[giro].copy()
         canUndoClear = true
         clearPattern()
     }
 
     fun undoClear() {
-        val before = cleared ?: return
-        for (i in pattern.indices) pattern[i] = before.first.getOrElse(i) { 0 }
-        for (i in 0 until DRUM_STEPS) {
-            bassNotes[i] = before.second.getOrElse(i) { -1 }
-            leadNotes[i] = before.third.getOrElse(i) { -1 }
-        }
+        val (g, before) = cleared ?: return
+        store[g].copyFrom(before)
         forgetCleared()
-        pushPattern()
+        pushGiro(g)
+        if (g == giro) showGiroPage(page)
         save()
     }
 
@@ -925,9 +1063,13 @@ object AppState {
         forgetCleared()
         grooveHint = ""
         if (l != null) {
+            // A lesson is built in one bar, on the grid.
             noteView = false
+            giroView = false
+            if (full) store[giro].bars = 1
             showRowsFor(l)
             clearPattern()
+            showGiroPage(0)
             applyDrumBpm(l.bpm)
         }
         save()
@@ -947,6 +1089,9 @@ object AppState {
         if (!drumsPlaying) return
         drumsPlaying = false
         recArmed = false
+        playStep = -1
+        queuedGiro = -1
+        chainPos = -1
         Engine.nativeSequencer(false)
         Engine.nativeSetMetronome(false, drumBpm.toFloat())
         Engine.nativeSetClick(true)
@@ -957,6 +1102,102 @@ object AppState {
     private fun applyDrumBpm(v: Int) {
         drumBpm = v.coerceIn(70, 180)
         if (drumsPlaying) Engine.nativeSetMetronome(true, drumBpm.toFloat())
+        save()
+    }
+
+    // ---- Groovebox ------------------------------------------------------------
+
+    /** Picks the giro to play and edit. While playing it comes in at the end of the loop. */
+    fun selectGiro(g: Int) {
+        if (!full || g !in 0 until GIRO_COUNT) return
+        if (drumsPlaying) {
+            if (chainOn) {
+                grooveHint = "scaletta accesa: i giri cambiano da soli"
+                return
+            }
+            Engine.nativeSelectGiro(g)
+            queuedGiro = if (g == giro) -1 else g
+        } else if (g != giro) {
+            forgetCleared()
+            giro = g
+            Engine.nativeSelectGiro(g)
+            showGiroPage(0)
+            save()
+        }
+    }
+
+    /** Copies the giro in use onto the next one and goes there: the start of a variation. */
+    fun copyGiro() {
+        if (!full) return
+        val to = (giro + 1) % GIRO_COUNT
+        store[to].copyFrom(store[giro])
+        pushGiro(to)
+        save()
+        selectGiro(to)
+    }
+
+    /** 1, 2 or 4 bars. New bars start as a copy of the ones before. */
+    fun changeBars(n: Int) {
+        if (!full || n !in BAR_CHOICES || n == store[giro].bars) return
+        forgetCleared()
+        store[giro].resize(n)
+        pushGiro(giro)
+        showGiroPage(page)
+        save()
+    }
+
+    /** Shows one bar and keeps it there, to edit it while the giro plays. */
+    fun showBar(n: Int) {
+        if (n !in 0 until bars) return
+        page = n
+        followPage = false
+        loadPage()
+    }
+
+    fun toggleFollow() {
+        followPage = !followPage
+    }
+
+    fun toggleChain() {
+        chainOn = !chainOn
+        queuedGiro = -1
+        grooveHint = ""
+        pushChain()
+        save()
+    }
+
+    fun chainCycleGiro(i: Int) {
+        val st = chain.getOrNull(i) ?: return
+        chain[i] = st.copy(giro = (st.giro + 1) % GIRO_COUNT)
+        pushChain()
+        save()
+    }
+
+    fun chainCycleReps(i: Int) {
+        val st = chain.getOrNull(i) ?: return
+        chain[i] = st.copy(reps = CHAIN_REPS[(CHAIN_REPS.indexOf(st.reps) + 1) % CHAIN_REPS.size])
+        pushChain()
+        save()
+    }
+
+    fun chainRemove(i: Int) {
+        if (chain.size <= 1 || i !in chain.indices) return
+        chain.removeAt(i)
+        pushChain()
+        save()
+    }
+
+    fun chainAdd() {
+        if (chain.size >= CHAIN_MAX) return
+        val last = chain.last()
+        chain.add(ChainStep((last.giro + 1) % GIRO_COUNT, last.reps))
+        pushChain()
+        save()
+    }
+
+    fun changeBassGate(delta: Int) {
+        bassGate = (bassGate + delta).coerceIn(15, 100)
+        Engine.nativeBassGate(bassGate / 100f)
         save()
     }
 }

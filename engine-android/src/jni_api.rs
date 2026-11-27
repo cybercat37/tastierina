@@ -366,24 +366,75 @@ pub extern "system" fn Java_it_tastierina_app_Engine_nativeScheduleCount(_env: J
     })
 }
 
-// ---- Drum machine (level 2) -------------------------------------------------
+// ---- Sequencer (levels 2 to 4): three giri of drums, bass and melody ----------
+
+fn u8_of(v: i32) -> u8 {
+    v.clamp(0, 255) as u8
+}
 
 #[no_mangle]
-pub extern "system" fn Java_it_tastierina_app_Engine_nativeSetStep(_env: JEnv, _this: JObj, track: i32, step: i32, on: JBoolean) {
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeSetStep(_env: JEnv, _this: JObj, giro: i32, track: i32, step: i32, on: JBoolean) {
     with_output((), |o| {
-        o.control.send(Command::SetStep { track: track.clamp(0, 255) as u8, step: step.clamp(0, 255) as u8, on: on != 0 });
+        o.control.send(Command::SetStep { giro: u8_of(giro), track: u8_of(track), step: u8_of(step), on: on != 0 });
     })
 }
 
-/// A whole row: bit s of `steps` is step s.
+/// A whole drum row of a giro: bit s of `steps` is step s (up to 64).
 #[no_mangle]
-pub extern "system" fn Java_it_tastierina_app_Engine_nativeSetPattern(_env: JEnv, _this: JObj, track: i32, steps: i32) {
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeSetPattern(_env: JEnv, _this: JObj, giro: i32, track: i32, steps: i64) {
     with_output((), |o| {
-        o.control.send(Command::SetPattern { track: track.clamp(0, 255) as u8, steps: (steps & 0xFFFF) as u16 });
+        o.control.send(Command::SetPattern { giro: u8_of(giro), track: u8_of(track), steps: steps as u64 });
     })
 }
 
-/// Starts or stops the drum machine on the running metronome.
+/// Puts `key` (0..18, -1 for silence) on a step of a note row (0 bass, 1 melody).
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeSetNote(_env: JEnv, _this: JObj, giro: i32, row: i32, step: i32, key: i32) {
+    with_output((), |o| {
+        o.control.send(Command::SetNote { giro: u8_of(giro), row: u8_of(row), step: u8_of(step), key: key.clamp(-1, 17) as i8 });
+    })
+}
+
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeClearGiro(_env: JEnv, _this: JObj, giro: i32) {
+    with_output((), |o| {
+        o.control.send(Command::ClearGiro { giro: u8_of(giro) });
+    })
+}
+
+/// Length of a giro: 1, 2 or 4 bars.
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeSetBars(_env: JEnv, _this: JObj, giro: i32, bars: i32) {
+    with_output((), |o| {
+        o.control.send(Command::SetBars { giro: u8_of(giro), bars: u8_of(bars) });
+    })
+}
+
+/// The giro to play and edit: at once when stopped, at the end of the loop when playing.
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeSelectGiro(_env: JEnv, _this: JObj, giro: i32) {
+    with_output((), |o| {
+        o.control.send(Command::SelectGiro { giro: u8_of(giro) });
+    })
+}
+
+/// Step `index` of the scaletta: `giro`, `reps` times.
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeSetChain(_env: JEnv, _this: JObj, index: i32, giro: i32, reps: i32) {
+    with_output((), |o| {
+        o.control.send(Command::SetChain { index: u8_of(index), giro: u8_of(giro), reps: u8_of(reps) });
+    })
+}
+
+/// Length of the scaletta and whether it drives the giri.
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeChain(_env: JEnv, _this: JObj, len: i32, on: JBoolean) {
+    with_output((), |o| {
+        o.control.send(Command::Chain { len: u8_of(len), on: on != 0 });
+    })
+}
+
+/// Starts or stops the sequencer on the running metronome.
 #[no_mangle]
 pub extern "system" fn Java_it_tastierina_app_Engine_nativeSequencer(_env: JEnv, _this: JObj, on: JBoolean) {
     with_output((), |o| {
@@ -391,35 +442,35 @@ pub extern "system" fn Java_it_tastierina_app_Engine_nativeSequencer(_env: JEnv,
     })
 }
 
+/// Where the sequencer is: engine::SeqState::pack.
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeSeqState(_env: JEnv, _this: JObj) -> i64 {
+    with_output(0, |o| o.control.shared.sequencer().pack() as i64)
+}
+
 #[no_mangle]
 pub extern "system" fn Java_it_tastierina_app_Engine_nativeDrum(_env: JEnv, _this: JObj, track: i32) {
     with_output((), |o| {
-        o.control.send(Command::Drum { track: track.clamp(0, 255) as u8 });
-    })
-}
-
-// ---- Note rows (level 3): 0 bass, 1 melody ------------------------------------
-
-/// Puts `key` (0..18, -1 for silence) on a step of a note row.
-#[no_mangle]
-pub extern "system" fn Java_it_tastierina_app_Engine_nativeSetNote(_env: JEnv, _this: JObj, row: i32, step: i32, key: i32) {
-    with_output((), |o| {
-        o.control.send(Command::SetNote { row: row.clamp(0, 255) as u8, step: step.clamp(0, 255) as u8, key: key.clamp(-1, 17) as i8 });
+        o.control.send(Command::Drum { track: u8_of(track) });
     })
 }
 
 /// Records a key played at `touch_nanos` on the step nearest to what the player
-/// was hearing. Returns that step (0..16), or -1 when the metronome is off.
+/// was hearing. Returns that step of the giro being played, or -1 when the
+/// sequencer is not running.
 #[no_mangle]
 pub extern "system" fn Java_it_tastierina_app_Engine_nativeRecord(_env: JEnv, _this: JObj, row: i32, key: i32, touch_nanos: i64) -> i32 {
-    with_output(-1, |o| match o.control.shared.grid() {
-        Some(grid) => {
-            let frame = heard_frame(o.presentation(touch_nanos), touch_nanos, o.sample_rate);
-            let abs_step = (grid.position(frame) * 4.0).round() as i64;
-            o.control.send(Command::RecordNote { row: row.clamp(0, 255) as u8, abs_step, key: key.clamp(-1, 17) as i8 });
-            abs_step.rem_euclid(engine::DRUM_STEPS) as i32
+    with_output(-1, |o| {
+        let state = o.control.shared.sequencer();
+        match o.control.shared.grid() {
+            Some(grid) if state.running => {
+                let frame = heard_frame(o.presentation(touch_nanos), touch_nanos, o.sample_rate);
+                let abs_step = (grid.position(frame) * 4.0).round() as i64;
+                o.control.send(Command::RecordNote { row: u8_of(row), abs_step, key: key.clamp(-1, 17) as i8 });
+                state.step_at(abs_step) as i32
+            }
+            _ => -1,
         }
-        None => -1,
     })
 }
 
@@ -428,5 +479,13 @@ pub extern "system" fn Java_it_tastierina_app_Engine_nativeRecord(_env: JEnv, _t
 pub extern "system" fn Java_it_tastierina_app_Engine_nativeBassFilter(_env: JEnv, _this: JObj, setting: f32) {
     with_output((), |o| {
         o.control.send(Command::BassFilter(setting));
+    })
+}
+
+/// How much of its step a bass note is held, 0.15 to 1.
+#[no_mangle]
+pub extern "system" fn Java_it_tastierina_app_Engine_nativeBassGate(_env: JEnv, _this: JObj, gate: f32) {
+    with_output((), |o| {
+        o.control.send(Command::BassGate(gate));
     })
 }

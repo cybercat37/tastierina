@@ -11,10 +11,10 @@ interfaccia in Kotlin e Jetpack Compose.
 | 1. Tastierina | Tastiera a 18 tasti, 9 strumenti, 21 canzoni guidate, modi Impara e A tempo con stelle | sì |
 | 2. Ritmo | Batteria a 16 passi con 16 suoni (la griglia scorre) e 14 lezioni di genere | sì |
 | 3. Groove | Righe di basso e melodia, registrazione dai tasti, filtro del basso, lezioni con il basso | sì |
-| 4. Groovebox | Giri A/B/C, 1-2-4 battute, scaletta | in arrivo |
+| 4. Groovebox | Giri A/B/C lunghi 1, 2 o 4 battute, cambio a fine giro, scaletta, durata del basso | sì |
 
-La versione web con tutti i livelli è in `web/index.html` e fa da specifica
-per quelli ancora da portare.
+Tutti i livelli sono nativi. La prima versione, una pagina web, resta in
+`web/index.html` come riferimento.
 
 ## Installare l'app
 

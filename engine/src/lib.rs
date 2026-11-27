@@ -20,7 +20,83 @@ use timing::BeatGrid;
 use voices::{Kit, Pad, Sound, Timbre, Voice};
 
 pub const MAX_VOICES: usize = 24;
-pub const QUEUE_LEN: usize = 256;
+/// Room for a whole song being sent at once (three giri of notes).
+pub const QUEUE_LEN: usize = 1024;
+/// A giro is 1, 2 or 4 bars of sixteen steps.
+pub const MAX_STEPS: usize = 64;
+/// Giri A, B and C (level 4).
+pub const GIRI: usize = 3;
+/// Steps of the scaletta at most.
+pub const CHAIN_MAX: usize = 8;
+const NO_CHAIN: u8 = 255;
+
+/// One giro: its length, a bitmask of steps per drum sound, a key per step per note row.
+#[derive(Clone, Copy)]
+struct Giro {
+    bars: u8,
+    drums: [u64; DRUM_TRACKS],
+    notes: [[i8; MAX_STEPS]; NOTE_ROWS],
+}
+
+impl Giro {
+    const EMPTY: Giro = Giro { bars: 1, drums: [0; DRUM_TRACKS], notes: [[-1; MAX_STEPS]; NOTE_ROWS] };
+
+    fn steps(&self) -> usize {
+        self.bars as usize * DRUM_STEPS as usize
+    }
+}
+
+/// Where the sequencer is, as the audio thread last published it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SeqState {
+    pub running: bool,
+    /// The next sixteenth to play, counted from beat 0 of the grid (wrapping).
+    pub next_step: u32,
+    /// The step of the giro that sixteenth will play.
+    pub pos: u8,
+    pub giro: u8,
+    pub bars: u8,
+    /// Step of the scaletta being played, 15 when it is not driving.
+    pub chain_pos: u8,
+    /// How many times that step has already played its giro.
+    pub chain_rep: u8,
+    /// A giro chosen by hand, waiting for the end of the loop.
+    pub queued: Option<u8>,
+}
+
+impl SeqState {
+    pub fn pack(&self) -> u64 {
+        self.next_step as u64
+            | (self.pos as u64) << 32
+            | (self.giro as u64 & 3) << 40
+            | (self.bars as u64 & 7) << 42
+            | (self.chain_pos as u64 & 15) << 45
+            | (self.chain_rep as u64 & 15) << 49
+            | (self.running as u64) << 53
+            | (self.queued.map_or(0, |q| q as u64 + 1) & 3) << 54
+    }
+
+    pub fn unpack(v: u64) -> SeqState {
+        let queued = ((v >> 54) & 3) as u8;
+        SeqState {
+            next_step: v as u32,
+            pos: (v >> 32) as u8,
+            giro: ((v >> 40) & 3) as u8,
+            bars: ((v >> 42) & 7) as u8,
+            chain_pos: ((v >> 45) & 15) as u8,
+            chain_rep: ((v >> 49) & 15) as u8,
+            running: (v >> 53) & 1 == 1,
+            queued: if queued == 0 { None } else { Some(queued - 1) },
+        }
+    }
+
+    /// The step of the giro that the absolute sixteenth `abs_step` lands on.
+    pub fn step_at(&self, abs_step: i64) -> usize {
+        let total = (self.bars.max(1) as i64) * DRUM_STEPS;
+        let ahead = (abs_step as u32).wrapping_sub(self.next_step) as i32 as i64;
+        (self.pos as i64 + ahead).rem_euclid(total) as usize
+    }
+}
 /// Sounds of the drum machine (level 2). Ids: 0 cassa, 1 rullante, 2 clap,
 /// 3 hat chiuso, 4 hat aperto, 5 tom basso, 6 cowbell, then `Kit::ALL` from 7.
 pub const DRUM_TRACKS: usize = 16;
@@ -94,15 +170,27 @@ pub enum Command {
     /// Whether the metronome ticks are heard (the grid keeps running either way).
     Click(bool),
     /// Turn one step of a drum row on or off.
-    SetStep { track: u8, step: u8, on: bool },
+    SetStep { giro: u8, track: u8, step: u8, on: bool },
     /// A whole drum row at once: bit `s` is step `s`.
-    SetPattern { track: u8, steps: u16 },
+    SetPattern { giro: u8, track: u8, steps: u64 },
     /// Start or stop the drum machine; it plays on the metronome grid, a step per sixteenth.
     Sequencer(bool),
     /// Play one drum row's sound now (to hear a step when it is turned on).
     Drum { track: u8 },
     /// Put a key (0..18, or -1 for silence) on a step of a note row.
-    SetNote { row: u8, step: u8, key: i8 },
+    SetNote { giro: u8, row: u8, step: u8, key: i8 },
+    /// Empty a giro: no drum steps, no notes. Its length stays.
+    ClearGiro { giro: u8 },
+    /// Length of a giro: 1, 2 or 4 bars.
+    SetBars { giro: u8, bars: u8 },
+    /// Play (and edit) this giro: at once when stopped, at the end of the loop when playing.
+    SelectGiro { giro: u8 },
+    /// Step `index` of the scaletta: play `giro` `reps` times.
+    SetChain { index: u8, giro: u8, reps: u8 },
+    /// Length of the scaletta, and whether it drives the giri.
+    Chain { len: u8, on: bool },
+    /// How much of its step a bass note is held, 0.15..1.
+    BassGate(f32),
     /// A key played live while recording: `abs_step` counts sixteenths from beat 0.
     /// If that step has not sounded yet it is skipped once, since the player just played it.
     RecordNote { row: u8, abs_step: i64, key: i8 },
@@ -122,11 +210,17 @@ pub struct Shared {
     /// Beat grid as f64 bits, valid while `metronome_on`.
     grid_origin: AtomicU64,
     grid_fpb: AtomicU64,
+    /// `SeqState::pack`.
+    seq: AtomicU64,
 }
 
 impl Shared {
     pub fn frames_rendered(&self) -> u64 {
         self.frames_rendered.load(Ordering::Acquire)
+    }
+
+    pub fn sequencer(&self) -> SeqState {
+        SeqState::unpack(self.seq.load(Ordering::Acquire))
     }
 
     /// The beat grid the audio thread is playing, if the metronome is on.
@@ -176,12 +270,24 @@ pub struct Renderer {
     /// Earliest scheduled beat, so the per-sample check is one comparison.
     next_due: f64,
     click: bool,
-    pattern: [u16; DRUM_TRACKS],
+    giri: [Giro; GIRI],
+    /// The giro being played and edited.
+    cur: usize,
+    queued: Option<u8>,
+    /// The step of the current giro that `next_step` will play.
+    pos: usize,
+    /// True until the first step after a start: that loop start changes nothing.
+    fresh: bool,
+    chain: [(u8, u8); CHAIN_MAX],
+    chain_len: u8,
+    chain_on: bool,
+    chain_pos: u8,
+    chain_rep: u8,
+    bass_gate: f32,
     sequencer: bool,
     /// Next sixteenth to play, counted from beat 0 of the grid.
     next_step: i64,
-    notes: [[i8; DRUM_STEPS as usize]; NOTE_ROWS],
-    skip: [[bool; DRUM_STEPS as usize]; NOTE_ROWS],
+    skip: [[bool; MAX_STEPS]; NOTE_ROWS],
     bass_filter: f32,
 }
 
@@ -194,6 +300,7 @@ pub fn engine(sample_rate: f64) -> (Control, Renderer) {
         metronome_on: AtomicBool::new(false),
         grid_origin: AtomicU64::new(0f64.to_bits()),
         grid_fpb: AtomicU64::new(1f64.to_bits()),
+        seq: AtomicU64::new(0),
     });
     let renderer = Renderer {
         sample_rate: sample_rate as f32,
@@ -208,11 +315,20 @@ pub fn engine(sample_rate: f64) -> (Control, Renderer) {
         scheduled_count: 0,
         next_due: f64::INFINITY,
         click: true,
-        pattern: [0; DRUM_TRACKS],
+        giri: [Giro::EMPTY; GIRI],
+        cur: 0,
+        queued: None,
+        pos: 0,
+        fresh: false,
+        chain: [(0, 1); CHAIN_MAX],
+        chain_len: 0,
+        chain_on: false,
+        chain_pos: NO_CHAIN,
+        chain_rep: 0,
+        bass_gate: 0.55,
         sequencer: false,
         next_step: 0,
-        notes: [[-1; DRUM_STEPS as usize]; NOTE_ROWS],
-        skip: [[false; DRUM_STEPS as usize]; NOTE_ROWS],
+        skip: [[false; MAX_STEPS]; NOTE_ROWS],
         bass_filter: 0.45,
     };
     (Control { tx, shared }, renderer)
@@ -238,26 +354,7 @@ impl Renderer {
                 if self.sequencer {
                     let due = self.metronome.grid.origin + self.metronome.grid.frames_per_beat * self.next_step as f64 / 4.0;
                     if self.frame as f64 >= due {
-                        let step = self.next_step.rem_euclid(DRUM_STEPS) as u16;
-                        for track in 0..DRUM_TRACKS {
-                            if self.pattern[track] & (1 << step) != 0 {
-                                if let Some(sound) = drum_sound(track as u8) {
-                                    self.start(sound, 1.0);
-                                }
-                            }
-                        }
-                        for row in 0..NOTE_ROWS {
-                            let key = self.notes[row][step as usize];
-                            if self.skip[row][step as usize] {
-                                self.skip[row][step as usize] = false;
-                            } else if key >= 0 {
-                                let midi = ROW_BASE[row] + key as u8;
-                                self.note_on(midi, ROW_TIMBRE[row], 0.9);
-                                let off = (self.next_step as f64 + ROW_GATE[row]) / 4.0;
-                                self.schedule(Event::SeqOff(midi, ROW_TIMBRE[row]), off);
-                            }
-                        }
-                        self.next_step += 1;
+                        self.play_step();
                     }
                 }
                 if self.scheduled_count > 0 && self.metronome.grid.position(self.frame as f64) >= self.next_due {
@@ -273,6 +370,7 @@ impl Renderer {
             self.frame += 1;
         }
         self.shared.frames_rendered.store(self.frame, Ordering::Release);
+        self.shared.seq.store(self.seq_state().pack(), Ordering::Release);
     }
 
     fn apply(&mut self, cmd: Command) {
@@ -328,27 +426,72 @@ impl Renderer {
                 }
             }
             Command::Click(on) => self.click = on,
-            Command::SetStep { track, step, on } => {
-                if (track as usize) < DRUM_TRACKS && (step as i64) < DRUM_STEPS {
-                    let bit = 1u16 << step;
-                    let row = &mut self.pattern[track as usize];
+            Command::SetStep { giro, track, step, on } => {
+                if (giro as usize) < GIRI && (track as usize) < DRUM_TRACKS && (step as usize) < MAX_STEPS {
+                    let bit = 1u64 << step;
+                    let row = &mut self.giri[giro as usize].drums[track as usize];
                     *row = if on { *row | bit } else { *row & !bit };
                 }
             }
-            Command::SetPattern { track, steps } => {
-                if let Some(row) = self.pattern.get_mut(track as usize) {
-                    *row = steps;
+            Command::SetPattern { giro, track, steps } => {
+                if (giro as usize) < GIRI && (track as usize) < DRUM_TRACKS {
+                    self.giri[giro as usize].drums[track as usize] = steps;
                 }
             }
-            Command::SetNote { row, step, key } => {
-                if (row as usize) < NOTE_ROWS && (step as i64) < DRUM_STEPS {
-                    self.notes[row as usize][step as usize] = key.clamp(-1, 17);
+            Command::SetNote { giro, row, step, key } => {
+                if (giro as usize) < GIRI && (row as usize) < NOTE_ROWS && (step as usize) < MAX_STEPS {
+                    self.giri[giro as usize].notes[row as usize][step as usize] = key.clamp(-1, 17);
                 }
             }
+            Command::ClearGiro { giro } => {
+                if let Some(g) = self.giri.get_mut(giro as usize) {
+                    g.drums = [0; DRUM_TRACKS];
+                    g.notes = [[-1; MAX_STEPS]; NOTE_ROWS];
+                }
+            }
+            Command::SetBars { giro, bars } => {
+                if (giro as usize) < GIRI && matches!(bars, 1 | 2 | 4) {
+                    self.giri[giro as usize].bars = bars;
+                }
+            }
+            Command::SelectGiro { giro } => {
+                if (giro as usize) < GIRI {
+                    if !self.sequencer {
+                        self.cur = giro as usize;
+                        self.pos = 0;
+                    } else if !self.chain_live() {
+                        self.queued = if giro as usize == self.cur { None } else { Some(giro) };
+                    }
+                }
+            }
+            Command::SetChain { index, giro, reps } => {
+                if (index as usize) < CHAIN_MAX && (giro as usize) < GIRI {
+                    self.chain[index as usize] = (giro, reps.clamp(1, 8));
+                }
+            }
+            Command::Chain { len, on } => {
+                self.chain_len = len.min(CHAIN_MAX as u8);
+                if on != self.chain_on {
+                    // Turned on or off while playing: it takes over, or lets go, at the next loop.
+                    self.chain_on = on;
+                    self.queued = None;
+                    self.chain_pos = NO_CHAIN;
+                    self.chain_rep = 0;
+                }
+                if self.chain_pos >= self.chain_len {
+                    self.chain_pos = NO_CHAIN;
+                }
+            }
+            Command::BassGate(v) => self.bass_gate = v.clamp(0.15, 1.0),
             Command::RecordNote { row, abs_step, key } => {
                 if (row as usize) < NOTE_ROWS {
-                    let step = abs_step.rem_euclid(DRUM_STEPS) as usize;
-                    self.notes[row as usize][step] = key.clamp(-1, 17);
+                    let total = self.giri[self.cur].steps() as i64;
+                    let step = if self.sequencer {
+                        (self.pos as i64 + abs_step - self.next_step).rem_euclid(total) as usize
+                    } else {
+                        abs_step.rem_euclid(total) as usize
+                    };
+                    self.giri[self.cur].notes[row as usize][step] = key.clamp(-1, 17);
                     if self.sequencer && abs_step >= self.next_step {
                         self.skip[row as usize][step] = true;
                     }
@@ -357,13 +500,22 @@ impl Renderer {
             Command::BassFilter(v) => self.bass_filter = v.clamp(0.0, 1.0),
             Command::Sequencer(on) => {
                 self.sequencer = on && self.metronome.on;
-                self.skip = [[false; DRUM_STEPS as usize]; NOTE_ROWS];
+                self.skip = [[false; MAX_STEPS]; NOTE_ROWS];
+                self.queued = None;
                 if !self.sequencer {
                     self.release_rows();
                 }
                 if self.sequencer {
                     let pos = self.metronome.grid.position(self.frame as f64);
                     self.next_step = (pos * 4.0).ceil().max(0.0) as i64;
+                    self.pos = 0;
+                    self.fresh = true;
+                    if self.chain_live() {
+                        // The scaletta always starts from its first step.
+                        self.chain_pos = 0;
+                        self.chain_rep = 0;
+                        self.cur = self.chain[0].0 as usize;
+                    }
                 }
             }
             Command::Drum { track } => {
@@ -371,6 +523,83 @@ impl Renderer {
                     self.start(sound, 1.0);
                 }
             }
+        }
+    }
+
+    fn chain_live(&self) -> bool {
+        self.chain_on && self.chain_len > 0
+    }
+
+    fn seq_state(&self) -> SeqState {
+        SeqState {
+            running: self.sequencer,
+            next_step: self.next_step as u32,
+            pos: self.pos as u8,
+            giro: self.cur as u8,
+            bars: self.giri[self.cur].bars,
+            chain_pos: if self.chain_live() && self.chain_pos < self.chain_len { self.chain_pos } else { 15 },
+            chain_rep: self.chain_rep,
+            queued: self.queued,
+        }
+    }
+
+    /// Plays the step that is due and moves on. Giri change only here, on step 0.
+    fn play_step(&mut self) {
+        if self.pos >= self.giri[self.cur].steps() {
+            self.pos = 0; // the giro got shorter under the playhead
+        }
+        if self.pos == 0 {
+            self.loop_start();
+        }
+        let giro = self.giri[self.cur];
+        let step = self.pos;
+        for track in 0..DRUM_TRACKS {
+            if giro.drums[track] >> step & 1 != 0 {
+                if let Some(sound) = drum_sound(track as u8) {
+                    self.start(sound, 1.0);
+                }
+            }
+        }
+        for row in 0..NOTE_ROWS {
+            let key = giro.notes[row][step];
+            if self.skip[row][step] {
+                self.skip[row][step] = false;
+            } else if key >= 0 {
+                let midi = ROW_BASE[row] + key as u8;
+                let gate = if row == 0 { self.bass_gate as f64 } else { ROW_GATE[row] };
+                self.note_on(midi, ROW_TIMBRE[row], 0.9);
+                self.schedule(Event::SeqOff(midi, ROW_TIMBRE[row]), (self.next_step as f64 + gate) / 4.0);
+            }
+        }
+        self.pos = (step + 1) % giro.steps();
+        self.next_step += 1;
+    }
+
+    /// The loop is about to start again: the scaletta moves on, or a giro chosen by hand comes in.
+    fn loop_start(&mut self) {
+        let before = self.cur;
+        if self.fresh {
+            self.fresh = false;
+        } else if self.chain_live() {
+            if self.chain_pos >= self.chain_len {
+                self.chain_pos = 0;
+                self.chain_rep = 0;
+            } else {
+                self.chain_rep += 1;
+                if self.chain_rep >= self.chain[self.chain_pos as usize].1 {
+                    self.chain_pos = (self.chain_pos + 1) % self.chain_len;
+                    self.chain_rep = 0;
+                }
+            }
+            self.cur = self.chain[self.chain_pos as usize].0 as usize;
+        }
+        if !self.chain_live() {
+            if let Some(q) = self.queued.take() {
+                self.cur = q as usize;
+            }
+        }
+        if self.cur != before {
+            self.skip = [[false; MAX_STEPS]; NOTE_ROWS];
         }
     }
 
@@ -633,8 +862,8 @@ mod tests {
         c.send(Command::Metronome { on: true, bpm: 120.0 });
         c.send(Command::Click(false));
         // Kick on steps 0 and 8, hat on step 4.
-        c.send(Command::SetPattern { track: 0, steps: 0b0000_0001_0000_0001 });
-        c.send(Command::SetStep { track: 3, step: 4, on: true });
+        c.send(Command::SetPattern { giro: 0, track: 0, steps: 0b0000_0001_0000_0001 });
+        c.send(Command::SetStep { giro: 0, track: 3, step: 4, on: true });
         c.send(Command::Sequencer(true));
         let out = run(&mut r, 48_000 * 4);
         let grid = c.shared.grid().unwrap();
@@ -647,11 +876,11 @@ mod tests {
         let (mut c, mut r) = engine(SR);
         c.send(Command::Metronome { on: true, bpm: 120.0 });
         c.send(Command::Click(false));
-        c.send(Command::SetStep { track: 4, step: 0, on: true });
+        c.send(Command::SetStep { giro: 0, track: 4, step: 0, on: true });
         c.send(Command::Sequencer(true));
         run(&mut r, 48_000); // half a bar at 120 BPM: the open hat on step 0 has played
-        c.send(Command::SetStep { track: 4, step: 0, on: false });
-        c.send(Command::SetStep { track: 1, step: 8, on: true });
+        c.send(Command::SetStep { giro: 0, track: 4, step: 0, on: false });
+        c.send(Command::SetStep { giro: 0, track: 1, step: 8, on: true });
         let out = run(&mut r, 48_000);
         let grid = c.shared.grid().unwrap();
         let hits = onsets(&out, grid.origin - 48_000.0);
@@ -666,8 +895,8 @@ mod tests {
         let (mut c, mut r) = engine(SR);
         c.send(Command::Metronome { on: true, bpm: 120.0 });
         c.send(Command::Click(false));
-        c.send(Command::SetNote { row: 0, step: 4, key: 9 });
-        c.send(Command::SetNote { row: 1, step: 12, key: 4 });
+        c.send(Command::SetNote { giro: 0, row: 0, step: 4, key: 9 });
+        c.send(Command::SetNote { giro: 0, row: 1, step: 12, key: 4 });
         c.send(Command::Sequencer(true));
         let out = run(&mut r, 48_000 * 2);
         let grid = c.shared.grid().unwrap();
@@ -709,6 +938,101 @@ mod tests {
         };
         assert!(brightness(1.0) > brightness(0.0) * 2.0);
         assert!((bass_cutoff(0.0) - 120.0).abs() < 0.01 && (bass_cutoff(1.0) - 7680.0).abs() < 1.0);
+    }
+
+    fn kick(giro: u8, step: u8) -> Command {
+        Command::SetStep { giro, track: 0, step, on: true }
+    }
+
+    fn start_sequencer(c: &mut Control) {
+        c.send(Command::Metronome { on: true, bpm: 120.0 });
+        c.send(Command::Click(false));
+        c.send(Command::Sequencer(true));
+    }
+
+    #[test]
+    fn a_giro_can_be_two_bars_long() {
+        let (mut c, mut r) = engine(SR);
+        c.send(Command::SetBars { giro: 0, bars: 2 });
+        c.send(kick(0, 0));
+        c.send(kick(0, 20));
+        start_sequencer(&mut c);
+        let out = run(&mut r, 48_000 * 9);
+        let grid = c.shared.grid().unwrap();
+        assert_eq!(&onsets(&out, grid.origin)[..4], &[0, 20, 32, 52]);
+    }
+
+    #[test]
+    fn a_giro_chosen_while_playing_comes_in_at_the_end_of_the_loop() {
+        let (mut c, mut r) = engine(SR);
+        c.send(kick(0, 0));
+        c.send(kick(1, 4));
+        start_sequencer(&mut c);
+        let first = run(&mut r, 24_000);
+        c.send(Command::SelectGiro { giro: 1 });
+        run(&mut r, 480);
+        assert_eq!(c.shared.sequencer().queued, Some(1));
+        assert_eq!(c.shared.sequencer().giro, 0, "A plays to the end of its bar");
+        let rest = run(&mut r, 48_000 * 5);
+        let grid = c.shared.grid().unwrap();
+        let out = [first, vec![0.0; 480], rest].concat();
+        assert_eq!(&onsets(&out, grid.origin)[..3], &[0, 20, 36], "A once, then B on its step 4");
+        let state = c.shared.sequencer();
+        assert!(state.running && state.giro == 1 && state.queued.is_none());
+    }
+
+    #[test]
+    fn the_scaletta_drives_the_giri_and_starts_over() {
+        let (mut c, mut r) = engine(SR);
+        c.send(kick(0, 0));
+        c.send(kick(1, 8));
+        c.send(Command::SetChain { index: 0, giro: 0, reps: 2 });
+        c.send(Command::SetChain { index: 1, giro: 1, reps: 1 });
+        c.send(Command::Chain { len: 2, on: true });
+        c.send(Command::SelectGiro { giro: 1 }); // stopped on B: the scaletta still starts from its first step
+        start_sequencer(&mut c);
+        let out = run(&mut r, 48_000 * 13);
+        let grid = c.shared.grid().unwrap();
+        assert_eq!(&onsets(&out, grid.origin)[..6], &[0, 16, 40, 48, 64, 88], "A A B, A A B");
+        // While it drives, a giro picked by hand is ignored.
+        c.send(Command::SelectGiro { giro: 2 });
+        run(&mut r, 480);
+        assert_eq!(c.shared.sequencer().queued, None);
+    }
+
+    #[test]
+    fn sequencer_state_packs_and_finds_steps() {
+        let s = SeqState { running: true, next_step: 70, pos: 6, giro: 2, bars: 4, chain_pos: 3, chain_rep: 7, queued: Some(1) };
+        assert_eq!(SeqState::unpack(s.pack()), s);
+        let idle = SeqState { running: false, next_step: 0, pos: 0, giro: 0, bars: 1, chain_pos: 15, chain_rep: 0, queued: None };
+        assert_eq!(SeqState::unpack(idle.pack()), idle);
+        assert_eq!(s.step_at(70), 6);
+        assert_eq!(s.step_at(68), 4, "two sixteenths ago");
+        assert_eq!(s.step_at(60), 60, "before the loop start it wraps to the end of the giro");
+    }
+
+    #[test]
+    fn the_bass_gate_holds_notes_longer() {
+        let energy = |gate: f32| {
+            let (mut c, mut r) = engine(SR);
+            c.send(Command::BassGate(gate));
+            c.send(Command::SetNote { giro: 0, row: 0, step: 0, key: 9 });
+            start_sequencer(&mut c);
+            run(&mut r, 48_000).iter().map(|s| s * s).sum::<f32>()
+        };
+        assert!(energy(1.0) > energy(0.2) * 2.0);
+    }
+
+    #[test]
+    fn clearing_a_giro_leaves_the_others() {
+        let (mut c, mut r) = engine(SR);
+        c.send(kick(0, 0));
+        c.send(kick(1, 0));
+        c.send(Command::ClearGiro { giro: 0 });
+        start_sequencer(&mut c);
+        assert!(run(&mut r, 48_000 * 2).iter().all(|s| s.abs() < 1e-3), "A is empty");
+        c.send(Command::SelectGiro { giro: 1 });
+        assert!(run(&mut r, 48_000 * 2).iter().any(|s| s.abs() > 0.1), "B still has its kick");
     }
 
     #[test]

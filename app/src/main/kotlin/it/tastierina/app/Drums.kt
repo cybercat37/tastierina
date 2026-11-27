@@ -305,8 +305,16 @@ private fun Cell(
 /** The text for the display at levels 2 and 3. */
 fun ritmoLcd(): String {
     val s = AppState
-    val groove = s.level == Level.GROOVE
+    val groove = s.level == Level.GROOVE || s.level == Level.GROOVEBOX
     if (groove && s.grooveHint.isNotEmpty()) return s.grooveHint
+    if (s.level == Level.GROOVEBOX && s.lessonNow == null && !s.recArmed) {
+        // Level 4 without a lesson: say where the song is.
+        val step = s.chain.getOrNull(s.chainPos)
+        val scaletta = if (s.chainOn && s.drumsPlaying && step != null) " ${s.chainRep + 1}/${step.reps} · scaletta" else ""
+        val next = if (s.queuedGiro >= 0) " → ${GIRO_NAMES[s.queuedGiro]} a fine giro" else ""
+        val bar = if (s.bars > 1) " · battuta ${s.page + 1}/${s.bars}" else ""
+        return "GIRO ${GIRO_NAMES[s.giro]}$scaletta$next$bar"
+    }
     return when (val st = s.lessonNow) {
         null -> when {
             s.recArmed -> "REC ${s.rowNames[s.recTarget].uppercase()} · suona i tasti a tempo"
